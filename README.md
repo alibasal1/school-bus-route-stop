@@ -89,12 +89,19 @@ Client extension.
 
 ## Database setup (once, in the Neon SQL Editor)
 
-Run in this order:
+**If the database is empty**, run in this order:
 
 1. `school-bus-schedule-arrival/db/auth-schema.sql` — `users`, `sessions`
 2. `school-bus-route-stop/db/schema.sql` — **this repo**
 3. `school-bus-schedule-arrival/db/schema.sql`
 4. `school-bus-favorites-alerts/db/schema.sql`
+
+**If the tables already exist**, do not run `db/schema.sql` — it starts with
+plain `CREATE TABLE` and will stop at "relation already exists". Run
+`db/migrations/001_route_stop_v2.sql` instead: it only adds, keeps the data,
+and is safe to run twice. Never drop the shared tables to force a rerun;
+`routes`, `stops`, `buses`, `trips`, `users`, `sessions` and `audit_log` are
+read by the other two services.
 
 This service reads `users`, `students` and `holidays` and never writes them.
 If the later schemas are not applied yet, it still runs — holiday skipping
@@ -124,4 +131,5 @@ forwarder). What each one solves and what happens without it:
 | [`docs/api-test-plan.md`](docs/api-test-plan.md) | 53 test cases, automated and manual |
 | [`docs/threat-model.md`](docs/threat-model.md) | nine threats, each with a cloud control and a code control |
 | [`docs/cloud-services.md`](docs/cloud-services.md) | why each cloud service is here |
+| [`docs/events.md`](docs/events.md) | the SNS event contract, for the Favorites & Alerts service |
 | [`infra/README.md`](infra/README.md) | deployment and AWS commands |

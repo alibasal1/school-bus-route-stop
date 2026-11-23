@@ -1,6 +1,19 @@
 -- ============================================================================
 -- Route & Stop service schema.  Owner: Yahia Wael (247330), Team 14.
 --
+-- >>> THIS FILE IS FOR AN EMPTY DATABASE ONLY. <<<
+-- It starts with plain CREATE TABLE, so on a Neon database that already has
+-- these tables it stops at "relation already exists".
+--
+-- Already have the first version of the tables?
+--   Run db/migrations/001_route_stop_v2.sql instead. It only adds, it can be
+--   run twice safely, and it keeps the data.
+--
+-- Do NOT drop the tables to make this file run. routes, stops, buses and
+-- trips are read by the other two services, and users, sessions and
+-- audit_log are shared by all three: dropping any of them takes the whole
+-- team's database down with it.
+--
 -- Run order in the Neon SQL Editor:
 --   1. school-bus-schedule-arrival/db/auth-schema.sql   (users, sessions)
 --   2. THIS FILE
