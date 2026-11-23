@@ -1,0 +1,338 @@
+### Route & Stop API — manual tests
+### VS Code + REST Client extension. Click "Send Request" above any block.
+### Test ids match docs/api-test-plan.md.
+
+@baseUrl = http://localhost:3001
+# @baseUrl = https://school-bus-route-stop.vercel.app
+
+### Log in through the Schedule & Arrival service first, then paste the
+### tokens here. Never commit real tokens.
+@adminToken = PASTE_ADMIN_TOKEN
+@parentToken = PASTE_PARENT_TOKEN
+@internalKey = PASTE_INTERNAL_API_KEY
+
+### Filled in from the responses as you go.
+@routeId = PASTE_ROUTE_ID
+@stopId = PASTE_STOP_ID
+@busId = PASTE_BUS_ID
+@tripId = PASTE_TRIP_ID
+
+
+### T01 health — no login needed
+GET {{baseUrl}}/api/health
+
+### T02 readiness — proves the database is reachable
+GET {{baseUrl}}/api/ready
+
+### T03 list routes
+GET {{baseUrl}}/api/routes
+Authorization: Bearer {{adminToken}}
+
+### T04 ranked search: the exact code comes first
+GET {{baseUrl}}/api/routes?search=R-01
+Authorization: Bearer {{adminToken}}
+
+### T05 create a route
+POST {{baseUrl}}/api/routes
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+Idempotency-Key: demo-route-001
+
+{
+  "code": "R-09",
+  "name": "Rehab City Line",
+  "area": "New Cairo"
+}
+
+### T44 same key, same body — replayed, no second route
+POST {{baseUrl}}/api/routes
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+Idempotency-Key: demo-route-001
+
+{
+  "code": "R-09",
+  "name": "Rehab City Line",
+  "area": "New Cairo"
+}
+
+### T41 same key, different body — 409
+POST {{baseUrl}}/api/routes
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+Idempotency-Key: demo-route-001
+
+{
+  "code": "R-10",
+  "name": "Different Line",
+  "area": "New Cairo"
+}
+
+### T06 add stops (run three times, changing the name)
+POST {{baseUrl}}/api/routes/{{routeId}}/stops
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "name": "Rehab Gate 1",
+  "landmark": "Opposite the mosque"
+}
+
+### T07 reorder every stop at once
+PUT {{baseUrl}}/api/routes/{{routeId}}/stops/order
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "stop_ids": ["PASTE_ID_3", "PASTE_ID_1", "PASTE_ID_2"]
+}
+
+### T07b move a single stop to the front
+PUT {{baseUrl}}/api/routes/{{routeId}}/stops/order
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "move": { "stop_id": "{{stopId}}", "to_position": 1 }
+}
+
+### T21 a partial list is refused — 400
+PUT {{baseUrl}}/api/routes/{{routeId}}/stops/order
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "stop_ids": ["{{stopId}}"]
+}
+
+### T08 delete a stop — the gap closes
+DELETE {{baseUrl}}/api/stops/{{stopId}}
+Authorization: Bearer {{adminToken}}
+
+### T23 stop_order cannot be set directly — 400
+PUT {{baseUrl}}/api/stops/{{stopId}}
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "stop_order": 9
+}
+
+### T09 add a bus
+POST {{baseUrl}}/api/buses
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "plate_number": "ABC 1234",
+  "capacity": 40,
+  "route_id": "{{routeId}}"
+}
+
+### T10 set the recurring pattern: Sun-Thu mornings
+PUT {{baseUrl}}/api/routes/{{routeId}}/schedule
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "run_type": "morning",
+  "days_of_week": [7, 1, 2, 3, 4],
+  "bus_id": "{{busId}}",
+  "active_from": "2026-03-01"
+}
+
+### T26 day 0 does not exist — 400
+PUT {{baseUrl}}/api/routes/{{routeId}}/schedule
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "run_type": "morning",
+  "days_of_week": [0],
+  "active_from": "2026-03-01"
+}
+
+### T11 preview the generated trips — nothing is written
+POST {{baseUrl}}/api/trips/generate
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "from": "2026-03-01",
+  "to": "2026-03-14",
+  "dry_run": true
+}
+
+### T12 commit them
+POST {{baseUrl}}/api/trips/generate
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+Idempotency-Key: generate-march-2026
+
+{
+  "from": "2026-03-01",
+  "to": "2026-03-14",
+  "dry_run": false
+}
+
+### T13 search trips by route and day
+GET {{baseUrl}}/api/trips?route_id={{routeId}}&date=2026-03-01
+Authorization: Bearer {{adminToken}}
+
+### T36 the slot is taken now — 409 ROUTE_SLOT_TAKEN
+POST {{baseUrl}}/api/trips
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "route_id": "{{routeId}}",
+  "bus_id": "{{busId}}",
+  "service_date": "2026-03-01",
+  "run_type": "morning"
+}
+
+### T20 a date in the past — 400
+POST {{baseUrl}}/api/trips
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "route_id": "{{routeId}}",
+  "service_date": "2020-01-01",
+  "run_type": "morning"
+}
+
+### T14 who a cancellation would affect
+GET {{baseUrl}}/api/trips/{{tripId}}/impact
+Authorization: Bearer {{adminToken}}
+
+### T15 cancel the trip — writes the outbox event in the same transaction
+PATCH {{baseUrl}}/api/trips/{{tripId}}/status
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "status": "cancelled",
+  "reason": "Bus 14 is in for repair"
+}
+
+### T40 cancelling twice — 409
+PATCH {{baseUrl}}/api/trips/{{tripId}}/status
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "status": "cancelled",
+  "reason": "Again"
+}
+
+### T16 name too short — 400
+POST {{baseUrl}}/api/routes
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "code": "R-11",
+  "name": "ab",
+  "area": "Maadi"
+}
+
+### T17 the client tries to choose the id — 400
+POST {{baseUrl}}/api/routes
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "id": "HACKED-1",
+  "code": "R-12",
+  "name": "Injected Line",
+  "area": "Maadi"
+}
+
+### T25 malformed JSON (trailing comma) — 400, server stays up
+POST {{baseUrl}}/api/routes
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "code": "R-13",
+  "name": "Broken Line",
+  "area": "Maadi",
+}
+
+### T42 not JSON — 415
+POST {{baseUrl}}/api/routes
+Authorization: Bearer {{adminToken}}
+Content-Type: text/plain
+
+code=R-14
+
+### T24 limit above the cap — 400
+GET {{baseUrl}}/api/routes?limit=100000
+Authorization: Bearer {{adminToken}}
+
+### T27 no token — 401
+GET {{baseUrl}}/api/routes
+
+### T28 an invented token — 401, same message as T27
+GET {{baseUrl}}/api/routes
+Authorization: Bearer this-token-was-never-issued-aaaaaaaa
+
+### T29 a parent trying to create a route — 403
+POST {{baseUrl}}/api/routes
+Authorization: Bearer {{parentToken}}
+Content-Type: application/json
+
+{
+  "code": "R-15",
+  "name": "Parent Should Not Create This",
+  "area": "Maadi"
+}
+
+### T30 a parent trying to delete — 403
+DELETE {{baseUrl}}/api/routes/{{routeId}}
+Authorization: Bearer {{parentToken}}
+
+### T33 an id that does not exist — 404 RESOURCE_NOT_FOUND
+PATCH {{baseUrl}}/api/trips/11111111-1111-4111-8111-111111111111/status
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "status": "cancelled",
+  "reason": "No such trip"
+}
+
+### T34 a path that does not exist — 404 ROUTE_NOT_FOUND (different code)
+GET {{baseUrl}}/api/nonsense
+Authorization: Bearer {{adminToken}}
+
+### T31 internal endpoint with no key — 401
+GET {{baseUrl}}/api/internal/events
+
+### T50 the outbox, with the service key
+GET {{baseUrl}}/api/internal/events
+X-Internal-Key: {{internalKey}}
+
+### T51 acknowledge an event (what the forwarder does)
+POST {{baseUrl}}/api/internal/events/ack
+X-Internal-Key: {{internalKey}}
+Content-Type: application/json
+
+{
+  "event_ids": ["PASTE_EVENT_ID"]
+}
+
+### T49 the scheduled run, as Vercel Cron calls it
+GET {{baseUrl}}/api/internal/cron/generate?days=21
+X-Internal-Key: {{internalKey}}
+
+### T48 a preflight from a hostile origin — no allow header comes back
+OPTIONS {{baseUrl}}/api/routes
+Origin: https://evil.example
+Access-Control-Request-Method: POST
+
+### T47 a preflight from the real frontend — allowed
+OPTIONS {{baseUrl}}/api/routes
+Origin: http://localhost:5173
+Access-Control-Request-Method: POST
