@@ -24,19 +24,41 @@
 // this file needs no bundling and no node_modules.
 
 import { SNSClient, PublishBatchCommand } from '@aws-sdk/client-sns';
+import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 
 const sns = new SNSClient({});
 
-const API_BASE = process.env.ROUTE_STOP_API_URL; // e.g. https://school-bus-route-stop.vercel.app
-const INTERNAL_KEY = process.env.INTERNAL_API_KEY;
+// The API Gateway address of the Route & Stop API on Floci, set by
+// infra/deploy.sh. Never a Vercel address: the forwarder has to read the
+// outbox of the deployment it is part of.
+const API_BASE = process.env.ROUTE_STOP_API_URL;
 const TOPIC_ARN = process.env.EVENTS_TOPIC_ARN;
 const BATCH_SIZE = Number(process.env.BATCH_SIZE || 100);
+
+// The internal key is a secret, so it is not a function setting: it is
+// fetched from Secrets Manager, exactly as the API does it. Cached for the
+// life of the container, so a warm run makes no extra call.
+let internalKey = null;
+async function getInternalKey() {
+  if (internalKey) return internalKey;
+  if (process.env.INTERNAL_API_KEY) {
+    internalKey = process.env.INTERNAL_API_KEY;
+    return internalKey;
+  }
+  const secretId = process.env.SECRET_ID;
+  if (!secretId) throw new Error('Neither INTERNAL_API_KEY nor SECRET_ID is set');
+  const client = new SecretsManagerClient({});
+  const response = await client.send(new GetSecretValueCommand({ SecretId: secretId }));
+  internalKey = JSON.parse(response.SecretString || '{}').INTERNAL_API_KEY;
+  if (!internalKey) throw new Error('The secret has no INTERNAL_API_KEY');
+  return internalKey;
+}
 
 // SNS PublishBatch takes at most 10 entries per call.
 const SNS_BATCH_LIMIT = 10;
 
 export const handler = async () => {
-  for (const name of ['ROUTE_STOP_API_URL', 'INTERNAL_API_KEY', 'EVENTS_TOPIC_ARN']) {
+  for (const name of ['ROUTE_STOP_API_URL', 'EVENTS_TOPIC_ARN']) {
     if (!process.env[name]) {
       throw new Error(`${name} is not set on the function`);
     }
@@ -105,7 +127,7 @@ export const handler = async () => {
 
 async function fetchPending() {
   const response = await fetch(`${API_BASE}/api/internal/events?limit=${BATCH_SIZE}`, {
-    headers: { 'X-Internal-Key': INTERNAL_KEY },
+    headers: { 'X-Internal-Key': await getInternalKey() },
     signal: AbortSignal.timeout(10000)
   });
   if (!response.ok) {
@@ -119,7 +141,7 @@ async function acknowledge(eventIds) {
   const response = await fetch(`${API_BASE}/api/internal/events/ack`, {
     method: 'POST',
     headers: {
-      'X-Internal-Key': INTERNAL_KEY,
+      'X-Internal-Key': await getInternalKey(),
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({ event_ids: eventIds }),

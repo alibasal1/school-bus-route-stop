@@ -98,7 +98,7 @@ Client extension.
 
 **If the tables already exist**, do not run `db/schema.sql` — it starts with
 plain `CREATE TABLE` and will stop at "relation already exists". Run
-`db/migrations/001_route_stop_v2.sql` instead: it only adds, keeps the data,
+`db/migrations/001_route_stop.sql` instead: it only adds, keeps the data,
 and is safe to run twice. Never drop the shared tables to force a rerun;
 `routes`, `stops`, `buses`, `trips`, `users`, `sessions` and `audit_log` are
 read by the other two services.

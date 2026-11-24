@@ -6,7 +6,7 @@
 -- these tables it stops at "relation already exists".
 --
 -- Already have the first version of the tables?
---   Run db/migrations/001_route_stop_v2.sql instead. It only adds, it can be
+--   Run db/migrations/001_route_stop.sql instead. It only adds, it can be
 --   run twice safely, and it keeps the data.
 --
 -- Do NOT drop the tables to make this file run. routes, stops, buses and

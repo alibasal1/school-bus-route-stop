@@ -13,6 +13,7 @@
 
 const { createHash, timingSafeEqual } = require('crypto');
 const { requireSql } = require('../db');
+const { securityLog } = require('./logger');
 
 function sendError(res, status, code, message) {
   const body = { error: { code, message } };
@@ -43,6 +44,7 @@ async function requireAuth(req, res, next) {
   try {
     const token = bearerToken(req);
     if (!token) {
+      securityLog(req, res, 'auth_missing_token');
       return sendError(res, 401, 'UNAUTHENTICATED', 'Please log in.');
     }
 
@@ -61,6 +63,10 @@ async function requireAuth(req, res, next) {
     // One message for "no such session" and for "expired": telling the
     // caller which one it was only helps someone probing for live tokens.
     if (!session || new Date(session.expires_at).getTime() <= Date.now()) {
+      // One log line for both cases, as with the message: recording which
+      // one it was would turn the log into a list of tokens that once
+      // existed.
+      securityLog(req, res, 'auth_invalid_session');
       return sendError(res, 401, 'UNAUTHENTICATED', 'Your session has expired. Please log in again.');
     }
 
@@ -84,6 +90,7 @@ function requireRole(...roles) {
       return sendError(res, 401, 'UNAUTHENTICATED', 'Please log in.');
     }
     if (!roles.includes(req.user.role)) {
+      securityLog(req, res, 'authz_role_refused', { role: req.user.role, needed: roles });
       return sendError(res, 403, 'FORBIDDEN', 'You do not have permission to do that.');
     }
     return next();
@@ -111,6 +118,7 @@ function requireServiceToken(req, res, next) {
   const a = Buffer.from(presented);
   const b = Buffer.from(expected);
   if (a.length !== b.length || !timingSafeEqual(a, b)) {
+    securityLog(req, res, 'internal_key_refused');
     return sendError(res, 401, 'UNAUTHENTICATED', 'Invalid internal key.');
   }
 
@@ -139,6 +147,7 @@ function requireScheduler(req, res, next) {
     (internalKey.length >= 32 && equals(presentedKey, internalKey));
 
   if (!matches) {
+    securityLog(req, res, 'scheduler_credential_refused');
     return sendError(res, 401, 'UNAUTHENTICATED', 'Invalid scheduler credential.');
   }
 

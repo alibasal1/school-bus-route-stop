@@ -56,6 +56,35 @@ function logger(req, res, next) {
   next();
 }
 
+/**
+ * A SECURITY line.
+ *
+ * Refused requests are logged under one fixed word so CloudWatch can filter
+ * on it: infra/deploy.sh puts a metric filter on "SECURITY" and an alarm on
+ * top of that, so a burst of refusals raises something instead of sitting in
+ * a log nobody reads.
+ *
+ * What goes in: what was refused, where from, and which user if known.
+ * What never goes in: tokens, Authorization headers, bodies, secrets.
+ */
+function securityLog(req, res, kind, extra = {}) {
+  console.warn(
+    JSON.stringify({
+      level: 'warn',
+      event: 'SECURITY',
+      kind,
+      service: 'route-stop',
+      request_id: res.locals?.requestId ?? null,
+      method: req.method,
+      path: req.path,
+      ip: req.awsEvent?.requestContext?.http?.sourceIp ?? req.ip ?? null,
+      user_id: req.user?.id ?? null,
+      ...extra,
+    })
+  );
+}
+
 module.exports = logger;
 module.exports.logger = logger;
 module.exports.requestContext = requestContext;
+module.exports.securityLog = securityLog;

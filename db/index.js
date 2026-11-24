@@ -3,29 +3,42 @@
 // Values interpolated into sql`...${value}...` are sent as bind parameters,
 // never as SQL text, so user input cannot change the shape of a query.
 // Nothing in this service builds SQL by string concatenation.
+//
+// The client is built on first use, not when this file is required. That
+// matters on Lambda: the connection string arrives from Secrets Manager
+// after the handler starts (see config/secrets.js), so reading
+// process.env.DATABASE_URL at require time would always find it empty.
 const { neon } = require('@neondatabase/serverless');
 
-const connectionString = (process.env.DATABASE_URL || '').trim();
+let client = null;
+let warned = false;
 
-if (!connectionString) {
-  // Failing here, at startup, is better than failing on the first request
-  // with a confusing driver error. /api/health still answers so a deploy
-  // with a missing variable is easy to spot.
-  console.error(
-    '[route-stop] DATABASE_URL is not set. Copy .env.example to .env and ' +
-      'paste the Neon connection string, or add it in the Vercel dashboard.'
-  );
+function connectionString() {
+  return (process.env.DATABASE_URL || '').trim();
 }
 
-const sql = connectionString ? neon(connectionString) : null;
-
 function requireSql() {
-  if (!sql) {
+  if (client) return client;
+
+  const url = connectionString();
+  if (!url) {
+    if (!warned) {
+      // Never print the value itself, only whether there is one.
+      console.error(
+        JSON.stringify({
+          level: 'error',
+          msg: 'DATABASE_URL is not set. On a PC copy .env.example to .env; on Lambda check SECRET_ID.',
+        })
+      );
+      warned = true;
+    }
     const error = new Error('DATABASE_URL is not configured.');
     error.code = 'DB_NOT_CONFIGURED';
     throw error;
   }
-  return sql;
+
+  client = neon(url);
+  return client;
 }
 
 /**
@@ -43,9 +56,18 @@ function transaction(queries) {
   return requireSql().transaction(queries);
 }
 
+/** True when a connection string is present. Used by the start-up log line. */
+function isConfigured() {
+  return Boolean(connectionString());
+}
+
 module.exports = {
-  sql,
+  // A getter, so callers that destructure still get a live value rather than
+  // whatever existed when this module was first required.
+  get sql() {
+    return requireSql();
+  },
   requireSql,
   transaction,
-  isConfigured: Boolean(sql)
+  isConfigured,
 };

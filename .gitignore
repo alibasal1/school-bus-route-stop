@@ -4,3 +4,7 @@ node_modules/
 dist/
 .vercel/
 .DS_Store
+
+# Build output and local test tokens (added 24/11)
+.test-tokens.local
+*.local
