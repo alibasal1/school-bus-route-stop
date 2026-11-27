@@ -2,98 +2,98 @@
 
 Service owner: Yahia Wael (247330), Team 14, 26CSCN29H.
 
-This document explains the backend rather than listing endpoints. The
-endpoint list is in [api-contract.md](api-contract.md).
+This explains the backend rather than listing endpoints. The endpoint list
+is in [api-contract.md](api-contract.md).
+
+Running on **Floci**: DynamoDB, Lambda, API Gateway, SQS, EventBridge,
+CloudWatch, IAM. Neon and Vercel are gone; the old version is on the
+`neon-version` branch.
 
 ---
 
 ## 1. What this service is for
 
-Three people need three different things from the same timetable.
+Three people need three different things from the same timetable. The
+**admin** plans it: routes, the stops along them, the buses, and which trips
+run. The **parent** reads it: which route serves their area, which stop is
+theirs, is there a bus tomorrow. The **supervisor** needs to know which trip
+they are on.
 
-The **admin** plans it: routes, the stops along them, the buses, and which
-trips run on which days. The **parent** reads it: which route serves their
-area, which stop is theirs, is there a bus tomorrow. The **supervisor** needs
-to know which trip they are on today.
-
-The hard part is not storing any of that. It is that the three views have to
-stay consistent while one person edits them: a stop cannot be fourth and
-fifth at the same time, a bus cannot be on two routes at 07:00, and a
-cancelled trip cannot leave a parent waiting at the kerb because an alert was
-lost. Those are the problems this service exists to solve, and they are why
-it is not a set of CRUD endpoints.
+The hard part is not storing that. It is keeping the three views consistent
+while one person edits them: a stop cannot be fourth and fifth at the same
+time, a bus cannot be on two routes at 07:00, and a cancelled trip cannot
+leave a parent waiting because an alert was lost. Those are the problems
+this service exists to solve, and they are why it is not a set of CRUD
+endpoints.
 
 ---
 
-## 2. The three layers, and why the boundaries are where they are
+## 2. The three layers
 
 ```
-HTTP request
-    │
-    ▼
-routes/routes.js        method + path  ->  guards  ->  one controller function
-    │                   knows: which endpoints exist, who may call them
-    ▼
+API Gateway  (only this service's routes, throttled)
+    |
+Lambda  route-stop-api   lambda.js -> app.js
+    |
+routes/routes.js        method + path -> guards -> one controller function
+    |                   the complete access-control map
 controllers/routes.js   validates input, chooses the status code
-    │                   knows: HTTP. Never writes SQL.
-    ▼
-services/routes.js      all SQL, all transactions, all business rules
-    │                   knows: the database. Never sees req or res.
-    ▼
-db/index.js             one Neon connection, parameterised queries only
-    │
-    ▼
-Neon Postgres
+    |                   knows HTTP. Never touches a table.
+services/routes.js      all DynamoDB access, all business rules
+    |                   knows the tables. Never sees req or res.
+db/dynamo.js            one Document client, paginated reads
+    |
+DynamoDB  +  SQS (send only, to Ali's queue)
 ```
 
-Alongside them sits `lib/`, which holds the decisions that are not about
-HTTP *or* the database: `tripPlanner.js` (what should exist on the calendar),
+Alongside them sits `lib/`: `tripPlanner.js` (what should exist),
 `resequence.js` (what a valid stop order looks like), `validate.js`,
-`dates.js`. They are pure functions over plain data.
+`dates.js`. Pure functions over plain data, no AWS and no HTTP.
 
-**Why split it this way.** Each layer can be understood, changed and tested
-without the others:
-
-- the service never touches `req`, so swapping Neon for DynamoDB (Lab 7)
-  changes one file and no routes or controllers — which is exactly what
-  happened to the Cloud Issue Tracker when it moved off its JSON file;
-- `lib/` has no database, so the 47 tests in `tests/` run in a quarter of a
-  second with `npm test` and no Neon instance. Checking "a leap day is a
-  normal service day" through HTTP would need a live database and a month of
-  seeded rows;
-- the routes file is the complete access-control map. One line shows every
-  guard a request passes before any code touches data.
+**Why the boundaries are there.** The move from Neon to DynamoDB touched
+`db/` and `services/routes.js` and **nothing else**: not one route, not one
+controller, not one test in `tests/unit/`. That is the layering paying for
+itself. The 50 unit tests still run in under a second with no database at
+all, because the logic they test never had one.
 
 ---
 
 ## 3. The trust boundary
 
 ```
-UNTRUSTED                          │  TRUSTED
-                                   │
-browser, Postman, curl, a script ──┼──▶ API ──▶ database
-                                   │
-                        the boundary is the HTTP request
+UNTRUSTED                           |  TRUSTED
+browser, Postman, curl, a script ---+---> API --> DynamoDB
+                                    |
+                      the boundary is the HTTP request
 ```
 
-Everything arriving from outside is untrusted, **however it was sent**. Our
-own React page is not special: anyone can open DevTools, or skip the page
-entirely and call the API with curl. Frontend validation exists to give the
-user quick feedback; the checks in `controllers/routes.js` are the ones that
-decide anything.
+Our own React page is not special: anyone can open DevTools or skip the page
+and call the API with curl. Frontend validation is a convenience; the checks
+in `controllers/routes.js` are the ones that decide anything.
 
-Four rules hold at the boundary:
+Four rules:
 
-1. **The API validates every request.** Types, lengths, enums, date
-   realism (`2026-02-31` parses but is not a day), id format.
+1. **Every request is validated.** Types, lengths, enums, date realism
+   (`2026-02-31` parses but is not a day), and id format.
 2. **The client never owns server fields.** `id`, `status`, `created_at`,
-   `stop_order` are rejected if sent, not silently ignored — so an attempt
-   shows up as a 400 in the logs rather than disappearing.
-3. **The browser never reaches the database.** Only this API holds
-   `DATABASE_URL`.
-4. **Errors say what the caller did wrong and nothing else.** Internal
-   messages and stack traces are logged with a request id; the caller gets
-   the id and a generic message.
+   `stop_order`, `cancelled_date` are refused if sent, not ignored, so an
+   attempt shows in the log instead of vanishing.
+3. **The browser never reaches the database.** Only the Lambda does, and
+   only with what its IAM role allows.
+4. **Errors say what the caller did wrong and nothing else.** Internals are
+   logged with a request id; the caller gets the id and a generic message.
+
+### Ids
+
+Ids are no longer UUIDs, because Ahmed's data uses readable keys like
+`route-cairo-demo`. The rule in `lib/validate.js` is an allow-list:
+letters, digits, hyphen, underscore, colon, 1 to 128 characters. An
+allow-list rather than a block-list, because listing what is safe holds
+against inputs nobody thought of.
+
+The **type** is checked before the pattern. A JSON body can carry an object
+where a string is expected, and `{"$ne": null}` reaching a query is the
+NoSQL version of `' OR 1=1`.
 
 ### Authentication and authorisation are separate questions
 
@@ -102,201 +102,205 @@ router.post('/routes', requireAuth, requireRole('admin'), writeLimit,
             verifyTurnstile, idempotent('POST /api/routes'), c.createRoute)
 ```
 
-`requireAuth` answers *who is this* (401 if there is no valid session).
-`requireRole` answers *may they do this* (403 if the role is wrong). Mixing
-them produces the classic bug where any logged-in parent can edit routes
-because the code only ever asked whether a token was present.
+`requireAuth` answers *who is this* (401). `requireRole` answers *may they
+do this* (403). Mixing them is how a logged-in parent ends up able to edit
+routes.
 
-Login itself lives in `school-bus-schedule-arrival`. This service never sees
-a password: it takes the bearer token, hashes it with SHA-256 and looks the
-hash up in the shared `sessions` table. The database stores only hashes, so a
-leaked backup contains nothing anyone can log in with.
-
-Guards are ordered cheapest-and-most-decisive first, so an anonymous flood is
-rejected by `requireAuth` without ever reaching Cloudflare or Postgres.
+Login lives in Ahmed's service. This one hashes the bearer token with
+SHA-256, reads `Sessions` by that hash, checks `expires_at` in Unix
+seconds, then reads `Users` for the role. The table stores only hashes, so a
+dump of it contains nothing anyone can log in with.
 
 ---
 
-## 4. What happens to one request
+## 4. One request, end to end
 
-`POST /api/trips` with a valid body:
+`POST /api/trips`:
 
 | # | Where | What happens |
 |---|---|---|
-| 1 | `app.js` | request id assigned, security headers set, request logged |
-| 2 | `app.js` | CORS: is this origin on the allow-list? |
-| 3 | `app.js` | body parsed, capped at 32 kb; not JSON → 415 |
+| 1 | API Gateway | route matched, throttle applied, event built |
+| 2 | `lambda.js` | body turned from a Buffer into a string, event attached for the rate limiter |
+| 3 | `app.js` | request id, security headers, log line, CORS, 32 kb body cap |
 | 4 | `routes/routes.js` | `requireAuth` → `requireRole('admin')` → rate limit → Turnstile → idempotency |
-| 5 | `controllers/routes.js` | fields validated; a date in the past → 400 |
-| 6 | `services/routes.js` | loads the route, the bus and every active trip in that slot |
-| 7 | `lib/tripPlanner.js` | `findConflicts()` — clash → **409 with the reasons listed** |
-| 8 | `services/routes.js` | transaction: insert the trip **and** the outbox event |
-| 9 | `controllers/routes.js` | 201 with the trip; audit row written |
+| 5 | `controllers/routes.js` | fields validated; a bad id is 400 here |
+| 6 | `services/routes.js` | loads the route, its stops, the bus, and every active trip |
+| 7 | `lib/tripPlanner.js` | `findConflicts()` — a clash is **409 with the reasons listed** |
+| 8 | `services/routes.js` | conditional `PutItem`, then the event is written and sent |
+| 9 | controller | 201, and an AUDIT line |
 
 Every status code is produced in exactly one known place:
 
 | Status | Code | Produced by |
 |---|---|---|
-| 400 | `VALIDATION_ERROR` | controller, or `errorHandler` for malformed JSON |
+| 400 | `VALIDATION_ERROR` | controller, or `errorHandler` for bad JSON |
 | 401 | `UNAUTHENTICATED` | `middleware/auth.js` |
 | 403 | `FORBIDDEN` / `BOT_CHECK_FAILED` | `requireRole` / `verifyTurnstile` |
 | 404 | `RESOURCE_NOT_FOUND` | controller, when the service returns null |
 | 404 | `ROUTE_NOT_FOUND` | `routeNotFound` in `app.js` |
-| 409 | `CONFLICT` | service, from `findConflicts` or a unique constraint |
-| 413 | `PAYLOAD_TOO_LARGE` | `errorHandler`, from the body-size cap |
+| 409 | `CONFLICT` | service, from `findConflicts` or a failed condition |
+| 413 | `PAYLOAD_TOO_LARGE` | `errorHandler` |
 | 415 | `UNSUPPORTED_MEDIA_TYPE` | `requireJsonBody` |
 | 429 | `RATE_LIMITED` | `middleware/rateLimit.js` |
-| 500 | `INTERNAL_ERROR` | `errorHandler`, for anything unexpected |
-| 503 | `SERVICE_UNAVAILABLE` | database unreachable, or Turnstile unreachable |
+| 500 | `INTERNAL_ERROR` | `errorHandler` |
+| 503 | `SERVICE_UNAVAILABLE` | DynamoDB unreachable or access denied |
 
 All of them use one body shape, so the frontend handles every failure the
 same way:
 
 ```json
-{ "error": { "code": "CONFLICT", "message": "…", "request_id": "…" } }
+{ "error": { "code": "CONFLICT", "message": "...", "request_id": "..." } }
 ```
 
 ---
 
-## 5. The four things that are not CRUD
+## 5. Tables, and who owns what
 
-### 5.1 Trip generation
+**This matters for the team. Confirm the Trips row with Ahmed.**
 
-An admin planning by hand creates one trip per route per run per day: three
-routes, two runs, five days is 30 forms a week. Instead they describe the
-pattern once in `route_schedules` — "route R-01 runs a morning trip Sunday to
-Thursday from 1 September" — and `planTrips()` expands it over a date range,
-skipping:
+| Table | Key | This service | Owner |
+|---|---|---|---|
+| `Routes` | `id` (+ `name-index`, `area-index`) | read and write | me |
+| `Stops` | `id` (+ `route-id-index`) | read and write | me |
+| `Buses` | `id` (+ `route-id-index`, `supervisor-id-index`) | read and write | me |
+| `RouteSchedules` | `id` (+ `route-id-index`) | read and write | me |
+| `TripEvents` | `event_id` (+ `sent-index`) | read and write | me |
+| `Trips` | `id` (+ `route-id-index`) | **creates and cancels** | Ahmed's design |
+| `TripStops` | `trip_id` + `stop_id` | writes when a trip is made | Ahmed's design |
+| `Users` | `user_id` | **read only** | Ahmed |
+| `Sessions` | `id` | **read only** | Ahmed |
+| `IdempotencyKeys` | `id`, TTL `expires_at` | read and write | me |
 
-- days the route does not run,
-- days outside the schedule's window,
-- public holidays, read from the Favorites & Alerts service's `holidays`
-  table (filled from Calendarific),
-- days that already have a trip,
-- anything that would double-book a bus or a supervisor.
+### The Trips change, and why it needs confirming
 
-`dry_run` is the **default**: the admin sees exactly what would be created
-and why each skipped day was skipped, then commits. A Vercel Cron job runs
-the same code every Sunday so the timetable always reaches three weeks ahead
-without anyone opening the admin page.
+In Ahmed's design a **Trip is the recurring run for one route and one run
+type** — "R1 morning" — not one row per day. Cancelling a single day sets
+`cancelled_date`.
 
-Generation is safe to repeat. Each run treats what it has already planned as
-occupied, the insert uses `ON CONFLICT DO NOTHING`, and an `Idempotency-Key`
-replays the first response rather than doing the work twice.
+That is different from the Neon version of this service, where a trip was
+one day. Three things follow, and Ahmed should agree with all three:
 
-### 5.2 Conflict detection
+1. A trip's id is `trip:<route_id>:<run_type>`, so a route has at most one
+   morning trip and one afternoon trip. Creating a second is a 409.
+2. `POST /api/trips` no longer takes `service_date`. The date appears only
+   when cancelling.
+3. "Generating trips" now means making sure every active route with stops
+   has the trips its schedule describes, rather than filling a calendar.
+   The daily EventBridge run does this.
+
+If Ahmed expects one row per day instead, only `services/routes.js` changes:
+the shape of a trip is not baked into the routes, the controller or the
+frontend.
+
+---
+
+## 6. The four things that are not CRUD
+
+### 6.1 Conflict detection
 
 Before any trip is written, `findConflicts()` checks it against the route's
-state and every other active trip in the same slot:
+state and every other active trip:
 
 | Code | Refused because |
 |---|---|
-| `ROUTE_SLOT_TAKEN` | the route already has an active trip in that slot |
+| `ROUTE_SLOT_TAKEN` | the route already has that run |
 | `BUS_DOUBLE_BOOKED` | the bus is already out on another route then |
 | `SUPERVISOR_DOUBLE_BOOKED` | the bus's supervisor is on another bus then |
-| `BUS_ROUTE_MISMATCH` | the bus is assigned to a different route |
+| `BUS_ROUTE_MISMATCH` | the bus belongs to a different route |
 | `ROUTE_INACTIVE` | the route is retired |
 | `ROUTE_HAS_NO_STOPS` | there is nowhere for the bus to stop |
 
-The caller gets 409 with every reason listed, not a database error.
+The caller gets 409 with every reason, not a database error. A conditional
+`PutItem` is the backstop for two admins saving in the same instant, since
+DynamoDB cannot express most of these as a constraint.
 
-Two of these are also enforced by the database —
-`trips_route_slot_unique`, and a **partial** unique index on
-`(bus_id, service_date, run_type) WHERE status = 'active'`, so cancelling a
-trip frees the slot. The application check gives a readable answer; the
-constraints are the backstop for two admins saving in the same instant.
-Defence in depth, as in Lecture 9: the control that produces the good error
-message is not the control that guarantees correctness.
+### 6.2 Atomic stop resequencing
 
-### 5.3 Atomic stop resequencing
+`stop_order` must always be 1..n with no gaps: Ahmed's service walks the
+stops in order and the parent app says "your stop is 4th". Letting the
+client set its own numbers breaks that three ways — a dropped request leaves
+a gap, two admins produce duplicates, a typo sends a stop to position 99.
 
-`stop_order` must always be 1..n with no gaps and no repeats, because the
-Schedule & Arrival service walks the stops in order and the parent app shows
-"your stop is 4th". Letting the client `PUT` its own numbers one stop at a
-time breaks that three ways: a dropped request leaves a gap, two admins
-editing at once produce duplicates, and a typo pushes a stop to position 99.
+So the client says what the order should be (the full list, or
+`{ stop_id, to_position }`), `lib/resequence.js` computes the smallest set
+of changes, and they go in one `TransactWriteItems`. Deleting a stop closes
+the gap in the same transaction, and `stop_order` is refused outright on the
+stop-update endpoint.
 
-So the client says what the order should be — the full list, or
-`{ stop_id, to_position }` — and `lib/resequence.js` computes the smallest
-set of changes. They are applied in one transaction against a `DEFERRABLE
-INITIALLY DEFERRED` unique constraint, so two stops may briefly share a
-position mid-update and the constraint is checked once at COMMIT. Without
-`DEFERRABLE`, any reorder that is not a simple append would fail. Deleting a
-stop closes the gap in the same transaction, and `stop_order` is rejected
-outright on the stop-update endpoint.
+This is where SQL and DynamoDB differ most. The SQL version leaned on a
+`DEFERRABLE UNIQUE` constraint; DynamoDB has no such thing, so the guarantee
+comes from the transaction plus the rule that only this one function sets
+`stop_order`.
 
-### 5.4 Cancellation impact, and the outbox
+### 6.3 Trip generation
 
-Cancelling a trip is not a status flip. The service first works out who is
-affected — which stops, and how many students and parents, by reading (never
-writing) the Schedule & Arrival service's `students` table — and returns that
-with the response so the admin sees what they just did.
+The admin describes the pattern once in `RouteSchedules` — "R1 runs morning
+and afternoon, Sunday to Thursday" — and generation expands it, skipping
+what already exists and refusing anything that would double-book a bus or a
+supervisor, with a reason for each. `dry_run` is the **default**, so the
+plan is always visible before anything is written. The EventBridge rule runs
+the same code daily.
 
-Then the important part. The alert belongs to Ali's service, and calling it
-over HTTP from inside the cancel request is the obvious design and the wrong
-one: the call sits outside the database transaction, so if that service is
-slow or down the trip is cancelled and the alert is **lost**. The admin sees
-success; the parents are never told.
+### 6.4 Cancellation impact, and the outbox
 
-Instead the cancellation and a row in `route_events` are written in one
-transaction: either both land or neither does. A Lambda on an EventBridge
-schedule publishes unpublished rows to an SNS topic and marks them published
-(`infra/aws/event-forwarder/`). If the alerts service is down the events
-wait. Delivery is at-least-once, so the event id doubles as the consumer's
-idempotency key.
+Cancelling is not a status flip. The service works out which stops and how
+many families are affected (reading Ahmed's `Students` table if present,
+tolerantly), returns that with the response, and writes the alert event to
+`TripEvents` **before** sending it to Ali's queue.
 
-This also decouples the services: a fourth consumer subscribes to the topic
-and nothing here changes.
+Sending inside the request and hoping is how an admin sees "cancelled" while
+nobody is told. A failed send stays unsent and the daily run sweeps it.
+Delivery is at-least-once, so `event_id` is the consumer's idempotency key.
+Full contract: [events.md](events.md).
 
 ---
 
-## 6. Keeping the service standing up
+## 7. Keeping the service standing up
 
 | Concern | How |
 |---|---|
-| Traffic | Rate limits in three tiers (reads 120/min, writes 20/min, generation 5 per 5 min), counted in Upstash Redis so the limit is shared across serverless instances. `Cache-Control` on the two read-heavy endpoints. |
-| Bots | Cloudflare Turnstile verified **server-side** on writes. Fails closed. |
-| Abuse of size | Body capped at 32 kb; `limit` capped at 100–200; generation capped at 120 days. |
-| Repeats | `Idempotency-Key` on every create. |
-| SQL injection | Every value is a bind parameter via `sql\`…${value}\``. No statement is built by joining strings, including the reorder, which uses `unnest` with arrays. |
-| Secrets | `.env` locally, encrypted environment variables in Vercel and Lambda. `.env` is in `.gitignore`; only `.env.example` is committed. |
-| Who did what | `audit_log` records every state-changing action with user, role, resource and status. Written after the response, never able to fail the request. |
-| Diagnosis | One JSON log line per request with a request id, echoed in every error body. `/api/health` (is it running) is separate from `/api/ready` (can it reach the database), so a bad deploy and a bad `DATABASE_URL` look different. |
+| Traffic | Three rate-limit tiers keyed on `requestContext.http.sourceIp`, never `X-Forwarded-For`. API Gateway throttling 10 rps burst 20 as well. |
+| Bots | Turnstile verified server-side on writes; skipped on Floci with a SECURITY line, see the threat model. |
+| Abuse of size | Body 32 kb, `limit` capped, reorder capped at 100 stops. |
+| Repeats | `Idempotency-Key` on creates, stored in DynamoDB with a TTL. |
+| Injection | Allow-list ids, type checks, and values only ever as `ExpressionAttributeValues`. |
+| Blast radius | IAM: write own tables, read-only Users and Sessions, send to one queue, own logs. No `"*"`. |
+| Who did what | One `AUDIT` line per state-changing action. |
+| Diagnosis | One JSON log line per request with a request id, echoed in every error body. `/api/health` (running) separate from `/api/ready` (can reach DynamoDB). |
 
-Nothing sensitive is logged: no bodies, no `Authorization` headers, no
-tokens, no query strings. Lecture 7's point is that logs are themselves
-security-sensitive data — a log that records a bearer token hands anyone with
-log access a working login. The user **id** is logged, which is enough to
-investigate an incident and useless for impersonation.
+Never logged: bodies, `Authorization` headers, tokens, query strings. A log
+holding a bearer token hands anyone with log access a working login. The
+user **id** is logged, which is enough to investigate and useless for
+impersonation.
 
----
+### Where this design would stop scaling
 
-## 7. What this service does not own
+Honest limits, since the marking asks for judgement rather than a clean
+story:
 
-| Table | Owner | This service |
-|---|---|---|
-| `users`, `sessions` | Schedule & Arrival (login) | reads only |
-| `students`, `attendance` | Schedule & Arrival | reads `students` for impact counts |
-| `holidays` | Favorites & Alerts | reads only |
-| `favorites`, `alerts` | Favorites & Alerts | never touches |
-| `audit_log` | shared | appends only |
-
-The two cross-service reads are deliberately tolerant: if `students` or
-`holidays` does not exist yet, the code logs a warning and carries on without
-that information. Knowing who to tell is useful, but it must never be able to
-block a cancellation.
+- **Route search is a Scan.** Right for one school's handful of routes,
+  wrong at ten thousand. The fix is a search attribute or OpenSearch, not a
+  bigger scan. `db/dynamo.js` caps it at 2000 items.
+- **`stop_count` is counted per route on every search.** Fine for a few
+  routes; it would become a stored counter.
+- **Rate limiting is in memory**, so it is per Lambda container.
+- **The outbox is two steps, not one transaction.** `TransactWriteItems`
+  across the trip and the event would close the millisecond window.
 
 ---
 
 ## 8. Running it
 
 ```bash
-cp .env.example .env     # then paste the Neon connection string
+cp .env.example .env
 npm install
-npm test                 # 47 tests, no database needed
-npm run dev              # http://localhost:3001/api/health
+npm run test:unit                       # 50 tests, no AWS
+npm run test:api                        # Jest + Supertest, no AWS
+export AWS_PROFILE=floci MSYS_NO_PATHCONV=1
+bash infra/deploy.sh                    # prints the API address
+npm run seed
+node scripts/make-test-sessions.js
 ```
 
-`docs/requests.http` sends every request in the test plan from VS Code with
-the REST Client extension. Deployment and the cloud services are in
-[`infra/README.md`](../infra/README.md).
+Deployment detail is in [../infra/README.md](../infra/README.md); the test
+plan is in [api-test-plan.md](api-test-plan.md).

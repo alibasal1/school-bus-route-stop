@@ -1,109 +1,88 @@
 # Events published by the Route & Stop service
 
 For the Favorites & Alerts service (Ali). This is the contract: what arrives
-on the SNS topic, what each field means, and what a consumer has to handle.
+on the queue, what each field means, and what a consumer has to handle.
 
-## How to receive them
+**Changed 27/11: SQS SendMessage replaces SNS.** Ali removed the topic, so
+this service now sends each event straight to his queue. The message body is
+unchanged, so his consumer did not need changing.
 
-Subscribe the existing SQS queue to the SNS topic rather than having this
-service call the queue directly. One publisher, any number of consumers, and
-adding a third later changes nothing here.
+Sender: `services/events.js`. Permission: `sqs:SendMessage` on that one queue
+ARN and nothing else (`infra/deploy.sh`, statement `SendToAlertsQueueOnly`).
 
-```bash
-aws sns subscribe \
-  --topic-arn arn:aws:sns:us-east-1:000000000000:school-bus-route-events \
-  --protocol sqs \
-  --notification-endpoint arn:aws:sqs:us-east-1:000000000000:favorites-alerts-queue \
-  --attributes RawMessageDelivery=true
-```
+## Where it goes
 
-`RawMessageDelivery=true` matters. Without it SNS wraps the payload in its
-own envelope and the real message arrives as a JSON **string** inside a
-`Message` field, so the queue sees a shape it does not recognise. With it,
-the body below is delivered as-is.
-
-Only want cancellations? Filter at the subscription instead of receiving
-everything and discarding most of it:
-
-```bash
-aws sns set-subscription-attributes \
-  --subscription-arn <arn> \
-  --attribute-name FilterPolicy \
-  --attribute-value '{"event_type":["trip.cancelled"]}'
-```
-
-The filter reads the `event_type` **message attribute**, which is set on
-every message alongside the body.
+| | |
+|---|---|
+| Queue URL | `http://localhost:4566/000000000000/favorites-alerts-queue` |
+| Queue ARN | `arn:aws:sqs:us-east-1:000000000000:favorites-alerts-queue` |
+| Set by | `ALERTS_QUEUE_URL` on the Lambda |
 
 ## Message body
 
 ```json
 {
-  "event_id": "9f1c…",
+  "event_id": "9f1c7a52-0b3e-4f1a-9c21-7d5a1e2f4b60",
   "event_type": "trip.cancelled",
-  "route_id": "3a7e…",
-  "trip_id": "c42b…",
-  "occurred_at": "2026-03-01T06:12:44.182Z",
+  "route_id": "route-cairo-demo",
+  "trip_id": "trip:route-cairo-demo:morning",
+  "occurred_at": "2026-11-28T06:12:44.182Z",
   "payload": {
-    "service_date": "2026-03-01",
+    "service_date": "2026-11-28",
     "run_type": "morning",
-    "route_code": "R-01",
-    "reason": "Bus 14 is in for repair",
-    "stop_ids": ["…", "…", "…"],
-    "affected_students": 12
+    "route_code": "R1",
+    "reason": "Bus 14 is in for repair"
   }
 }
 ```
 
-| Field | Always present | Meaning |
+| Field | Always there | Meaning |
 |---|---|---|
-| `event_id` | yes | uuid, unique per event. **Use it as the idempotency key.** |
-| `event_type` | yes | see the table below |
-| `route_id` | on route-scoped events | the route |
-| `trip_id` | on trip events only | the trip |
+| `event_id` | yes | unique per event. **Use it as the idempotency key.** |
+| `event_type` | yes | `trip.cancelled` or `trip.created` |
+| `route_id` | yes | the route |
+| `trip_id` | yes | the trip |
 | `occurred_at` | yes | when it happened, not when it was delivered |
-| `payload` | yes | shape depends on `event_type` |
+| `payload.service_date` | on cancel | the day being cancelled; `null` on `trip.created` |
+| `payload.run_type` | yes | `morning` or `afternoon` |
+| `payload.route_code` | yes | the code a parent would recognise, e.g. `R1` |
+| `payload.reason` | on cancel | the text the parent should see |
 
-Message attributes: `event_type` and `event_id`, both strings.
-
-## Event types
-
-| `event_type` | When | `payload` |
-|---|---|---|
-| `trip.cancelled` | an admin cancels a trip | `service_date`, `run_type`, `route_code`, `reason`, `stop_ids[]`, `affected_students` |
-| `trip.created` | a single trip is created by hand | `service_date`, `run_type`, `bus_id` |
-| `trips.generated` | a generation run commits | `from`, `to`, `route_id`, `planned`, `by` |
-
-`trip.cancelled` is the one that has to reach parents. The other two are
-there so a consumer can keep a local view in step; ignoring them is fine.
-
-`stop_ids` is what maps a cancellation to the families to notify: a parent's
-saved stop appearing in that list means their child is affected.
-`affected_students` is this service's own count and is `null` when the
-`students` table is not reachable — treat it as information, not as the list.
+Message attributes, both strings: `event_type` and `event_id`. `event_type`
+is also in the body, so a consumer that ignores attributes still works.
 
 ## Two things a consumer must handle
 
-**Duplicates.** Delivery is at-least-once. A crash between publishing and
-acknowledging replays the event, so the same `event_id` can arrive twice.
-Record the ids you have processed and skip repeats; sending a parent the
-same cancellation twice is a worse bug than a slightly late alert.
+**Duplicates.** Delivery is at-least-once. The sender writes the event to
+`TripEvents` first and then sends it; if marking it sent fails, the daily
+sweep sends it again. The same `event_id` can therefore arrive twice. Ali
+stores processed ids in `processed_events` and skips repeats.
 
-**Lateness.** The forwarder runs every five minutes, so an alert can lag the
-cancellation by that much. Read the time from `occurred_at`, not from when
-the message arrived, or a message delayed by a retry will be shown as having
-just happened.
+**Lateness.** A send that fails is retried by the daily EventBridge run, so
+an event can arrive hours after it happened. Read the time from
+`occurred_at`, not from when the message arrived.
 
-## Why it works this way
+## Why the outbox is still there
 
-The alternative was for this service to call the alerts API directly inside
-the cancel request. That call sits outside the database transaction, so if
-the alerts service were slow or down the trip would be cancelled and the
-alert silently lost: the admin sees success and the parents wait at the kerb.
+The alert belongs to Ali's service, and sending inside the request and
+hoping is how an admin sees "cancelled" while nobody is told, and the
+parents find out at the kerb. So the event is written to `TripEvents` before
+it is sent. A failed send is a retry, never a silent loss.
 
-Instead the cancellation and the event row are written in one transaction —
-either both land or neither does — and a Lambda drains the table to SNS on a
-schedule. If the consumer is down the events wait. Nothing is lost, and the
-two services are not coupled to each other's uptime.
+It is simpler than the SQL version: no forwarder Lambda, no topic. The write
+and the send are two steps rather than one transaction, which is the honest
+trade for the deadline. The window where a row exists and the message does
+not is milliseconds, and the sweep closes it.
 
-Full reasoning: [`architecture.md`](architecture.md) §5.4.
+## Testing it
+
+`tests/api/routes.test.js` mocks the SQS client and asserts:
+
+- cancelling sends **exactly one** message, with the body above
+- the `event_type` attribute is set, because Ali's filter reads it
+- cancelling a second time is `409` and sends **no** second message, so no
+  family is told twice
+- creating a trip sends `trip.created`
+
+End to end with Ali: `evidence/joint-cancel-test.txt` (see
+`docs/api-test-plan.md`, test ST-09).

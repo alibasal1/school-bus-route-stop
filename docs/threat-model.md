@@ -1,167 +1,194 @@
 # Threat model — Route & Stop
 
-Service owner: Yahia Wael (247330), Team 14.
+Service owner: Yahia Wael (247330), Team 14, 26CSCN29H.
 
-Scope: this service only — routes, stops, buses, schedules and trips. Login
-belongs to Schedule & Arrival; alerts belong to Favorites & Alerts. Where a
-threat crosses a boundary, that is said.
+Scope: this service only. Login belongs to Ahmed, alerts belong to Ali.
+Running on Floci: DynamoDB, Lambda, API Gateway, SQS, EventBridge,
+CloudWatch, IAM.
 
-The Phase 1 feedback was that the proposal's mitigations were almost all
-application code, with little use of cloud services. Each row below names
-both: the control in the code **and** the cloud service standing in front of
-it. That is defence in depth from Lecture 9 — no single control is the only
-thing between an attacker and the data.
-
----
+Every threat below names **the file that holds the control** and **the test
+that proves it works**. A control nobody tested is a claim, not a control.
 
 ## Assets
 
 | Asset | Why it matters | Worst case |
 |---|---|---|
 | Timetable data | Families plan their morning around it | A child is sent to a stop with no bus |
-| `DATABASE_URL` | Full read/write on every table of all three services | Total compromise |
-| `INTERNAL_API_KEY` | Opens `/api/internal/*` | Forged events, mass trip generation |
 | Session tokens | Impersonation of an admin | Anything an admin can do |
-| Availability | A free-tier database with a monthly budget | One scripted loop takes the app down for every family |
-| `audit_log` | The record of who changed what | An incident with no evidence |
+| The Lambda's IAM role | Reaches every table the policy allows | Whole-database damage |
+| `INTERNAL_API_KEY` | Opens `/api/internal/*` | Forged generation runs |
+| Availability | One shared Floci for three services | The whole app is down for the demo |
+| The alert path to Ali | Parents only learn of a cancellation this way | Children wait at the kerb |
 
 ## Trust boundaries
 
-1. **Browser → API.** The main one. Everything crossing it is untrusted.
-2. **Service → service.** Reads of `users`, `students`, `holidays`; events
-   out to Favorites & Alerts.
-3. **API → platform.** Neon, Upstash, Cloudflare, SNS.
-4. **Developer → repository.** Where secrets leak if they leak.
+1. **Browser to API Gateway.** The main one. Everything crossing it is
+   untrusted, whichever page it came from.
+2. **Lambda to DynamoDB and SQS.** Controlled by the IAM role, not by a
+   credential in the code.
+3. **This service to Ali's service.** One queue, send only.
+4. **Developer to repository.** Where secrets leak if they leak.
 
 ---
 
-## Threats and mitigations
+## T1 — Someone calls an admin endpoint without being an admin
 
-### T1 — Automated clients flooding the API
+A parent, or anyone with any valid token, tries to create a route, cancel a
+trip or read the bus list.
 
-*An attacker, or a buggy frontend loop, calls `GET /api/routes` or
-`POST /api/trips` thousands of times a minute.*
+**Control:** `middleware/auth.js`. `requireAuth` answers *who is this* and
+`requireRole('admin')` answers *may they do this*, as two separate guards
+applied in `routes/routes.js`, where the whole access map can be read in one
+screen. The role comes from the Users table, never from the request.
 
-Neon's free plan has 100 compute-hours a month; exhausting it pauses the
-database for everyone. This is a denial of service that costs the attacker
-nothing.
+**Why it is split:** a single "is logged in" check is how a parent ends up
+able to edit routes. Hiding a button is not access control either; the
+frontend chooses a view for convenience only.
 
-| Layer | Control |
-|---|---|
-| Cloud | **Upstash Redis** holds the counters, so the limit is shared across every Vercel instance. An in-memory counter is per-instance, and a platform that scales to ten instances turns "20 a minute" into 200. |
-| Cloud | **Cloudflare Turnstile**, verified server-side, on writes. |
-| Code | Three budgets: reads 120/min, writes 20/min, generation 5 per 5 min, each keyed by user id when logged in and by IP otherwise. |
-| Code | `limit` capped at 100–200, generation capped at 120 days, body capped at 32 kb. |
+**Tests:** `tests/api/routes.test.js` — "a parent may NOT create a route"
+(403), "a parent may NOT cancel a trip" (403, and no SQS message sent).
+On Floci: ST-03 in `docs/api-test-plan.md`.
 
-The rate limiter **fails open** if Upstash is unreachable, because a limiter
-that takes the API down when its own store is down has become the outage it
-was meant to prevent. Turnstile **fails closed**, because allowing
-unverified writes whenever Cloudflare is slow would hand the attacker the
-bypass: time the check out, then write freely. The difference is deliberate.
+---
 
-### T2 — SQL injection
+## T2 — A stolen, guessed or expired token
 
-*A route name or search term carries SQL.*
+Someone replays a token from a log or a screenshot, or keeps using one after
+it should have expired.
 
-| Layer | Control |
-|---|---|
-| Code | Every value reaches Postgres as a bind parameter via `sql\`…${value}\``. No statement anywhere is built by joining strings — the bulk reorder and the bulk insert use `unnest` with arrays rather than a generated `VALUES` list. |
-| Code | Ids are checked against a UUID pattern before the query, so `1' OR '1'='1` is a 400, not a query. |
-| Data | `CHECK` constraints on `run_type` and `status`; a `DEFERRABLE UNIQUE` on stop order. |
-| Cloud | Neon's role has rights on this database only. |
+**Control:** `middleware/auth.js`. The Sessions table is keyed by the
+SHA-256 of the token, so the table holds nothing anyone can log in with. A
+missing session and an expired one get **the same** 401 and the same words,
+so the API never confirms which tokens were once real. `expires_at` is
+checked in Unix seconds on every request.
 
-### T3 — A parent or supervisor acting as an admin
+**Also:** `middleware/logger.js` never logs tokens, Authorization headers,
+bodies or query strings. A log holding a bearer token hands anyone with log
+access a working login.
 
-*A logged-in parent calls `POST /api/routes`, or edits the id in a URL.*
+**Tests:** "an invented token is 401, with the same message as an expired
+one" and "an expired session is 401 even though the row exists". On Floci:
+ST-01 and ST-02.
 
-| Layer | Control |
-|---|---|
-| Code | `requireAuth` and `requireRole('admin')` on every write, applied in `routes/routes.js` where the whole access map can be read at once. Hiding a button is not access control. |
-| Code | Authentication and authorisation are separate functions, so "has a token" can never be mistaken for "is an admin". |
-| Code | Tokens are looked up as SHA-256 hashes with an expiry check; one message for unknown and expired, so the API does not confirm which tokens exist. |
-| Audit | Every state-changing action lands in `audit_log` with user, role, resource and status. |
+---
 
-Object-level ownership is thin here by nature: route and trip data is the
-same for every parent, so there is no per-user row to leak. The ownership
-rules that matter live in the other two services.
+## T3 — Injection through an id (NoSQL, and the SQL habit)
 
-### T4 — Credentials leaking through the repository
+A caller sends `{"$ne": null}`, `' OR 1=1`, or `../../` where an id is
+expected.
 
-*`DATABASE_URL` or a key is committed.*
+**Control:** `lib/validate.js`. Ids must match an allow-list of letters,
+digits, hyphen, underscore and colon, 1 to 128 characters. An allow-list,
+not a block-list: listing what is safe holds against inputs nobody thought
+of. The **type** is checked first, because a JSON body can carry an object
+where a string is expected, and that is how NoSQL injection usually
+arrives.
 
-| Layer | Control |
-|---|---|
-| Code | `.env` is in `.gitignore`; only `.env.example` is committed, with placeholders and a warning. |
-| Cloud | Real values live in Vercel's encrypted environment variables and the Lambda configuration. |
-| Process | Gitleaks in CI before merge; GitHub secret scanning is on for the repository. |
-| Response | If one leaks: reset the Neon role password, rotate `INTERNAL_API_KEY`, redeploy. Rotating is cheap because nothing reads a secret from code. |
+**Also:** `services/routes.js` never builds an expression from input. Values
+always travel as `ExpressionAttributeValues`.
 
-### T5 — Cross-site scripting through stop or route names
+**Tests:** `tests/unit/validate.test.js` — "id blocks SQL and NoSQL
+injection" and "id rejects a non-string". `tests/api/routes.test.js` — "a
+bad id is 400, not a lookup" and "a NoSQL injection object in an id is 400".
+On Floci: ST-04.
 
-*An admin saves `<script>…</script>` as a stop name; a parent opens the page.*
+---
 
-| Layer | Control |
-|---|---|
-| Code (frontend) | React escapes interpolated text, and the vanilla pages use `textContent`, never `innerHTML`. |
-| Code (API) | Lengths and character rules on every text field. |
-| Cloud | CSP on the frontend via `vercel.json`, and `default-src 'none'` on the API itself, so a JSON response can never be rendered as a page. |
+## T4 — Flooding the API
 
-The API deliberately **stores** what it is given rather than stripping tags:
-escaping belongs at the point of display, and an API that silently rewrites
-input makes the stored data disagree with what the admin typed.
+A script, or a buggy loop in the frontend, calls the API thousands of times
+a minute. Three services share one Floci, so this takes the whole demo down.
 
-### T6 — A hostile site calling the API with a parent's session
+**Control:** `middleware/rateLimit.js`, counted per source address taken
+from `requestContext.http.sourceIp` in the API Gateway event — **never**
+`X-Forwarded-For`, which the client writes itself and could change on every
+request to get an unlimited budget. Reads 120/min, writes 20/min,
+generation 5 per 5 minutes, each answering 429 with `Retry-After`.
 
-*A parent visits `evil.example`, which fetches our API from their browser.*
+API Gateway is also configured with throttling at 10 rps, burst 20
+(`infra/deploy.sh`). Floci records that but does not enforce it, which is
+exactly why the application keeps its own limit: on the demo machine, this
+is the only one that fires.
 
-| Layer | Control |
-|---|---|
-| Code | CORS allow-list from `CORS_ORIGINS`; unknown origins get no allow header and are logged. Never a wildcard. |
-| Code | Sessions are bearer tokens, not cookies, so there is nothing for a browser to attach automatically — CSRF does not apply. |
-| Cloud | HSTS and HTTPS everywhere. |
+**Also:** `limit` is capped at 100–200, the body at 32 kb, and a reorder at
+100 stops, so one request cannot ask for unbounded work.
 
-CORS protects browsers only; curl ignores it. It is a layer, not the
-boundary. The boundary is `requireAuth` plus `requireRole`.
+**Tests:** ST-06 on Floci (130 requests, expect 429 and `Retry-After`).
+The limiter fails open if its store is unreachable, which is deliberate and
+recorded in `docs/api-test-plan.md`.
 
-### T7 — A cancellation that nobody hears about
+---
 
-*A trip is cancelled while the Favorites & Alerts service is down. Parents
-are never told and wait at the kerb.*
+## T5 — A compromised function reaching further than it should
 
-This is the threat with a real safety cost, and it is not a security control
-in the usual sense — it is an integrity one.
+Someone finds a flaw in this service and uses its identity to read or
+destroy data belonging to the rest of the team.
 
-| Layer | Control |
-|---|---|
-| Data | The status change and the `route_events` row are written in **one transaction**. Either both land or neither does. |
-| Cloud | An AWS Lambda on an **EventBridge** schedule publishes unpublished events to an **SNS** topic and marks them published. If the consumer is down, events wait in the table. |
-| Code | At-least-once delivery; the event id is the consumer's idempotency key. |
-| Ops | Unpublished rows older than a few minutes are a visible backlog in `route_events`. |
+**Control:** the IAM policy in `infra/deploy.sh`. Four statements, each
+naming its resources:
 
-### T8 — A compromised Lambda reaching further than it should
+- write only on `Routes`, `Stops`, `Buses`, `RouteSchedules`, `TripEvents`,
+  `Trips`, `TripStops`
+- **read only** on `Users` and `Sessions`
+- `sqs:SendMessage` on Ali's one queue ARN, nothing else
+- logs only in this service's own log group
 
-*The forwarder is compromised.*
+No `"*"` resource anywhere. If this function were fully compromised, that is
+the entire blast radius: it cannot create a user, cannot grant itself a
+role, cannot read Ali's tables, and cannot touch another queue.
 
-| Layer | Control |
-|---|---|
-| Cloud | Its IAM role may `sns:Publish` to **one** topic ARN and write **its own** log group. No database access, no other topic, no delete, no `"*"`. |
-| Cloud | `lambda add-permission` limits who may invoke it to the EventBridge rule. |
-| Code | It holds `INTERNAL_API_KEY`, which only opens read-and-acknowledge on the outbox — it cannot create, cancel or delete anything. |
+**Tests:** ST-07 reads the deployed role policy back and checks there is no
+`"*"`. The read-only split is visible in the policy document itself.
 
-Lecture 7's point about the inside of the boundary: once something is in,
-the only thing limiting the damage is what its identity is allowed to do.
+---
 
-### T9 — Losing the record of what happened
+## T6 — A cancellation that nobody hears about
 
-*Someone cancels a month of trips and nobody can say who.*
+A trip is cancelled while Ali's service or the queue is unreachable. Parents
+are never told and the children wait at the kerb. This one has a real safety
+cost, and it is an integrity problem rather than a classic attack.
 
-| Layer | Control |
-|---|---|
-| Code | `audit_log`: service, user, role, action, resource, status, request id. |
-| Code | One structured JSON log line per request, with the request id echoed in every error body. |
-| Code | Bodies, tokens, `Authorization` headers and query strings are never logged. A log holding a bearer token hands anyone with log access a working login. |
-| Cloud | Vercel Logs, and CloudWatch for the Lambda. |
-| Code | The audit write can never fail the request it describes. |
+**Control:** `services/events.js`. The event is written to `TripEvents`
+before it is sent, and only marked sent once SQS has accepted it. A failed
+send stays unsent and the daily EventBridge run
+(`controllers/routes.js`, `cronGenerateTrips`) sweeps it. Delivery is
+at-least-once, so `event_id` is the consumer's idempotency key.
+
+The cancel itself uses a conditional write, so two admins pressing cancel at
+the same moment produce one cancellation and one alert, not two.
+
+**Tests:** "cancelling sends exactly one SQS message, in the agreed shape"
+and "cancelling twice is 409 and does not send a second message". End to end
+with Ali: ST-09, `evidence/joint-cancel-test.txt`.
+
+---
+
+## T7 — Secrets leaking through the repository or the logs
+
+**Control:** `.gitignore` covers `.env` and `.test-tokens.local`.
+`scripts/zip.js` refuses to build the deployment package if anything
+matching `.env` would be included. With DynamoDB there is no connection
+string at all: access comes from the IAM role, which is the strongest
+version of this control, because there is no secret to leak.
+
+**Tests:** ST-08 — `git grep` for secrets, the Lambda's environment read
+back, and the log group checked for tokens.
+
+---
+
+## T8 — Automated writes from a script driving a real account
+
+**Control:** `middleware/turnstile.js`, verified server-side, on writes. The
+widget in the browser protects nothing on its own, because a script can skip
+the page and call the API directly.
+
+**Honest status:** Floci has no Turnstile secret, so on the demo deployment
+this check is **skipped**, and it logs a SECURITY line saying so once per
+container rather than failing silently. On a real deployment with the key
+set it fails closed. This is a known gap, accepted for the deadline, and T4
+is what actually limits automated writes on Floci.
+
+**Tests:** the skip line appears in the log, which ST-06 captures.
 
 ---
 
@@ -169,25 +196,25 @@ the only thing limiting the damage is what its identity is allowed to do.
 
 | # | Threat | Likelihood | Impact | After controls |
 |---|---|---|---|---|
-| T1 | Flooding / bots | High | High (budget exhausted) | Low |
-| T2 | SQL injection | Medium | Critical | Very low |
-| T3 | Role escalation | Medium | High | Low |
-| T4 | Leaked credentials | Medium | Critical | Low |
-| T5 | XSS | Low | Medium | Low |
-| T6 | Hostile origin | Medium | Medium | Low |
-| T7 | Lost cancellation alert | Medium | **High (safety)** | Low |
-| T8 | Over-permissioned Lambda | Low | High | Very low |
-| T9 | No audit trail | Medium | Medium | Low |
+| T1 | Role escalation | Medium | High | Low |
+| T2 | Stolen or expired token | Medium | High | Low |
+| T3 | Injection in an id | Medium | Critical | Very low |
+| T4 | Flooding | High | High | Low |
+| T5 | Over-permissioned function | Low | Critical | Very low |
+| T6 | Lost cancellation alert | Medium | **High (safety)** | Low |
+| T7 | Leaked secrets | Medium | Critical | Low |
+| T8 | Bot writes | Medium | Medium | Medium on Floci |
 
 ## Accepted, with reasons
 
-- **No WAF.** Cloudflare's managed rules would sit in front of the API, but
-  that needs a custom domain the team does not have. Rate limiting and
-  Turnstile cover the realistic traffic threats for a project of this size.
-- **No encryption beyond the platform's.** Neon encrypts at rest and TLS
-  protects transit. This service stores no personal data of its own — names
-  of roads, not of children.
-- **No automated secret rotation.** Manual, documented, and realistic for a
-  three-person team over one term.
-- **Rate limiting is fail-open.** Stated above; availability is worth more
-  here than a hard stop when Upstash blips.
+- **Turnstile off on Floci** (T8 above). Rate limiting carries the load.
+- **No WAF.** Needs a custom domain the team does not have.
+- **The outbox is two steps, not one transaction.** DynamoDB could do it
+  with `TransactWriteItems` across the trip and the event, and that would be
+  the next improvement; the current window is milliseconds and the sweep
+  closes it.
+- **Route search uses a Scan.** Correct for one school's handful of routes,
+  wrong at scale. `db/dynamo.js` caps it and `docs/architecture.md` says
+  what to do instead.
+- **Rate limiting is in memory**, so it is per Lambda container. On Floci
+  that is usually one container; on real AWS it would need a shared store.

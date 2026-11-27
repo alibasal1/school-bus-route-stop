@@ -1,171 +1,134 @@
-# Infrastructure for the Route & Stop service
+# Deploying Route & Stop on Floci
 
-Everything here is configuration for services that live outside the
-repository. The application code does not change when these are added; each
-one is switched on by setting environment variables.
-
-```
-infra/
-├── aws/
-│   ├── trust-policy.json              who may wear the forwarder's role
-│   ├── event-forwarder-policy.json    what that role may do
-│   └── event-forwarder/index.mjs      the Lambda that drains the outbox
-└── README.md
-```
-
----
-
-## 1. Upstash Redis — distributed rate limiting
-
-**Why:** a counter held in a Vercel function's memory is per-instance, and
-the platform runs as many instances as it likes. "20 writes a minute" then
-really means "20 per minute per instance", which anyone with a little
-concurrency walks straight past. Redis gives all instances one counter.
-
-**Set up:** create a free database at upstash.com, copy the REST URL and
-token into `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` locally
-and in Vercel. The service reaches it with `fetch` over its REST API, so
-there is no npm package and nothing extra in the dependency tree.
-
-**Without it:** the service still runs and falls back to an in-memory
-counter. That is fine on a laptop and in the demo; it is logged as a warning
-in production so the gap is never invisible.
-
----
-
-## 2. Cloudflare Turnstile — bot protection on writes
-
-**Why:** threat 1 in the proposal. A login stops anonymous bots but not a
-script driving a real account, and the widget on the page stops nothing at
-all, because a script can skip the page and call the API directly. The
-protection is the server-side check in `middleware/turnstile.js`.
-
-**Set up:** create a Turnstile widget for the frontend's hostname. The site
-key is public and goes in the frontend; the secret key goes in
-`TURNSTILE_SECRET_KEY` here and nowhere else. Cloudflare's always-passing
-test secret for local work is `1x0000000000000000000000000000000AA`.
-
-**Fails closed.** If Cloudflare cannot be reached the write is refused with
-503, not allowed through. Failing open would hand an attacker the way around
-the control: make the check time out, then write freely.
-
----
-
-## 3. Vercel Cron — scheduled trip generation
-
-**Why:** the point of `route_schedules` is that nobody creates trips by hand.
-`vercel.json` runs `GET /api/internal/cron/generate?days=21` every Sunday at
-02:00 UTC, so the timetable always reaches three weeks ahead.
-
-**Set up:** add a `CRON_SECRET` environment variable in Vercel. The platform
-sends it as `Authorization: Bearer …`, and `requireScheduler` compares it in
-constant time. Without a secret the route refuses every call rather than
-defaulting to open.
-
-The same endpoint works from an EventBridge rule or a curl in the lab, using
-`X-Internal-Key: $INTERNAL_API_KEY` instead:
+One command:
 
 ```bash
-curl -H "X-Internal-Key: $INTERNAL_API_KEY" \
-  "https://school-bus-route-stop.vercel.app/api/internal/cron/generate?days=21"
+export AWS_PROFILE=floci MSYS_NO_PATHCONV=1
+bash infra/deploy.sh
 ```
 
----
+Re-runnable. Every step either creates the thing or updates it, so running
+it twice is not an error. If Floci is restarted and loses everything, this
+rebuilds it from nothing.
 
-## 4. AWS SNS + Lambda — the event forwarder
+`MSYS_NO_PATHCONV=1` matters in Git Bash: without it, an argument starting
+with `/` (such as `/aws/lambda/route-stop-api`) is rewritten into a Windows
+path and the call fails in a confusing way.
 
-**Why:** so a cancellation can never be announced to nobody. The cancel
-writes its event into `route_events` in the same transaction as the status
-change; this Lambda publishes those events to an SNS topic on a schedule and
-marks them published. The Favorites & Alerts service subscribes to the topic.
-If it is down, the events wait; nothing is lost and nothing is duplicated
-into the cancel request's critical path.
+## What it builds
 
-**Deploy (Floci or real AWS — the commands are identical, as in Lab 7):**
+Everything is prefixed `route-stop-`, so nothing here can touch Ali's
+resources, which start with `favorites-alerts-`.
+
+| Step | What |
+|---|---|
+| 1 | DynamoDB tables with their GSIs |
+| 2 | IAM role and a least-privilege policy |
+| 3 | Secrets Manager, only if a Turnstile key is set |
+| 4 | `npm run zip` builds the deployment package |
+| 5 | Lambda `route-stop-api`, Node 20 |
+| 6 | API Gateway `route-stop-http-api`, throttling 10 rps burst 20 |
+| 7 | EventBridge daily rule for trip generation |
+| 8 | CloudWatch log group, SECURITY metric filter, alarm |
+
+It prints the API address at the end.
+
+## Tables
+
+Owned by this service: `Routes`, `Stops`, `Buses`, `RouteSchedules`,
+`TripEvents`, `IdempotencyKeys`.
+
+Ahmed's, created here **only if missing** so this service can run on a clean
+Floci without waiting for his deploy: `Trips`, `TripStops`, `Users`,
+`Sessions`. If his script ran first, they are left exactly as they are.
+
+Billing is `PAY_PER_REQUEST`: nothing to guess, nothing to pay when idle.
+
+## The IAM policy
+
+The part worth reading. Four statements, each naming its resources:
+
+```
+WriteOwnTables          Routes, Stops, Buses, RouteSchedules, TripEvents,
+                        Trips, TripStops   (+ their indexes)
+ReadAuthTablesOnly      Users, Sessions    GetItem and Query only
+SendToAlertsQueueOnly   sqs:SendMessage on one queue ARN
+OwnLogsOnly             /aws/lambda/route-stop-*
+```
+
+No `"*"` resource anywhere. A fully compromised function cannot create a
+user, grant itself a role, read Ali's tables, or touch another queue. That
+is the whole blast radius, and it is the answer to two of the threats in
+`docs/threat-model.md`.
+
+Two kinds of permission are involved, as Lab 7 sets out: the **execution
+role** says what the function may do, and `lambda add-permission` says
+**who may invoke it**. Real AWS checks both. Floci stores them without
+enforcing, so a policy that is too narrow passes here and fails on a real
+account.
+
+## After deploying
 
 ```bash
-# 1. The topic consumers subscribe to
-aws sns create-topic --name school-bus-route-events
+npm run seed                          # 2 routes, 3 stops each, buses, trips
+node scripts/make-test-sessions.js    # writes .test-tokens.local
+source .test-tokens.local
 
-# 2. The role and its permissions
-aws iam create-role --role-name route-stop-forwarder-role \
-  --assume-role-policy-document file://infra/aws/trust-policy.json
-
-aws iam create-policy --policy-name route-stop-forwarder-access \
-  --policy-document file://infra/aws/event-forwarder-policy.json
-
-aws iam attach-role-policy --role-name route-stop-forwarder-role \
-  --policy-arn arn:aws:iam::000000000000:policy/route-stop-forwarder-access
-
-# 3. The function itself
-cd infra/aws/event-forwarder && zip -r ../forwarder.zip index.mjs && cd -
-
-aws lambda create-function --function-name route-stop-event-forwarder \
-  --runtime nodejs20.x --handler index.handler \
-  --role arn:aws:iam::000000000000:role/route-stop-forwarder-role \
-  --zip-file fileb://infra/aws/forwarder.zip --timeout 30 \
-  --environment "Variables={ROUTE_STOP_API_URL=https://school-bus-route-stop.vercel.app,\
-INTERNAL_API_KEY=$INTERNAL_API_KEY,\
-EVENTS_TOPIC_ARN=arn:aws:sns:us-east-1:000000000000:school-bus-route-events}"
-
-# 4. Run it every five minutes
-aws events put-rule --name route-stop-drain-outbox \
-  --schedule-expression "rate(5 minutes)"
-
-aws events put-targets --rule route-stop-drain-outbox \
-  --targets "Id=1,Arn=arn:aws:lambda:us-east-1:000000000000:function:route-stop-event-forwarder"
-
-aws lambda add-permission --function-name route-stop-event-forwarder \
-  --statement-id events-invoke --action lambda:InvokeFunction \
-  --principal events.amazonaws.com \
-  --source-arn arn:aws:events:us-east-1:000000000000:rule/route-stop-drain-outbox
+export API=http://<api-id>.execute-api.localhost.floci.io:4566
+curl "$API/api/health"
+curl "$API/api/ready"
+curl "$API/api/routes" -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-### Least privilege in `event-forwarder-policy.json`
-
-The role may publish to **one** topic and write **its own** log group. It
-cannot read the database, touch another topic, create a topic, or delete
-anything. If the function were compromised, that is the entire blast radius.
-The `Resource` fields are specific ARNs rather than `"*"` for exactly that
-reason — two of the four threats in the proposal are about what an attacker
-can reach *after* getting in, and this is the answer to both.
-
-Note the two kinds of permission involved, as in Lab 7: the **execution
-role** above says what the function may do, while `lambda add-permission`
-says who may invoke the function. Real AWS checks both; Floci stores them
-without enforcing them, so a policy that is too narrow will pass on Floci and
-fail with `AccessDeniedException` on a real account.
-
-### Verifying it works
+Logs:
 
 ```bash
-# Events waiting to go out
-curl -H "X-Internal-Key: $INTERNAL_API_KEY" \
-  https://school-bus-route-stop.vercel.app/api/internal/events
-
-# Run the forwarder by hand
-aws lambda invoke --function-name route-stop-event-forwarder out/forwarder.json
-cat out/forwarder.json
-
-# What it logged
-aws logs tail /aws/lambda/route-stop-event-forwarder --since 10m --format short
+aws logs tail /aws/lambda/route-stop-api --since 10m --format short
+aws logs tail /aws/lambda/route-stop-api --since 10m --format short | grep SECURITY
 ```
 
----
+Clean up the demo data (dry run unless `--yes`):
 
-## Environment variables, and where each one lives
+```bash
+npm run cleanup
+npm run cleanup -- --yes
+```
 
-| Variable | Local `.env` | Vercel | Lambda | Secret |
-|---|---|---|---|---|
-| `DATABASE_URL` | yes | yes | no | **yes** |
-| `CORS_ORIGINS` | yes | yes | no | no |
-| `INTERNAL_API_KEY` | yes | yes | yes | **yes** |
-| `CRON_SECRET` | no | yes | no | **yes** |
-| `UPSTASH_REDIS_REST_URL` / `_TOKEN` | optional | yes | no | **yes** (token) |
-| `TURNSTILE_SECRET_KEY` | optional | yes | no | **yes** |
-| `ROUTE_STOP_API_URL` | no | no | yes | no |
-| `EVENTS_TOPIC_ARN` | no | no | yes | no |
+## Order on the demo machine
 
-No secret is ever written in code, in `.env.example`, or in a commit.
-`.gitignore` keeps `.env` out of the repository; the deployed copies live in
-the Vercel dashboard and the Lambda configuration, both encrypted at rest.
+1. **This script first.** It creates the tables, including Ahmed's if they
+   are missing.
+2. **Ali's `deploy.sh` next.** It creates `favorites-alerts-queue` and his
+   consumer.
+3. Then the joint cancel test (ST-09 in `docs/api-test-plan.md`).
+
+If Ali's queue does not exist yet, cancelling still works: the event is
+stored in `TripEvents` as unsent, and the daily run (or
+`POST /api/internal/events/retry`) delivers it once the queue is there.
+
+## Environment variables
+
+Set on the Lambda by the script. None of them is a secret, because DynamoDB
+access comes from the IAM role rather than a credential:
+
+| Variable | What |
+|---|---|
+| `NODE_ENV` | `production` |
+| `CORS_ORIGINS` | `http://localhost:5173` by default |
+| `AWS_ENDPOINT_URL` | points the SDK at Floci |
+| `ALERTS_QUEUE_URL` | Ali's queue |
+| `INTERNAL_API_KEY` | generated if not supplied; opens `/api/internal/*` |
+| `SECRET_ID` | only when a Turnstile key was configured |
+
+`.env` is for local runs only and is in `.gitignore`. Never commit it.
+
+## When something fails
+
+| Symptom | Likely cause |
+|---|---|
+| `Cannot reach Floci` | Docker is not running, or `AWS_PROFILE` is not `floci` |
+| Every POST returns 400 | the Buffer body fix in `lambda.js` is missing |
+| `ResourceNotFoundException` | the tables were not created; re-run step 1 |
+| `AccessDeniedException` | the IAM policy is too narrow for a new table |
+| 503 from `/api/ready` | the function cannot reach DynamoDB; check `AWS_ENDPOINT_URL` |
+| Alerts never arrive | Ali's queue does not exist yet; check `TripEvents` for unsent rows |

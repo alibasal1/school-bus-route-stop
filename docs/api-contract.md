@@ -4,7 +4,9 @@ Service owner: Yahia Wael (247330). Base path `/api`. All requests and
 responses are JSON. How the backend works is explained in
 [architecture.md](architecture.md).
 
-Local: `http://localhost:3001` · Deployed: `https://school-bus-route-stop.vercel.app`
+Local: `http://localhost:3001` · Floci:
+`http://<api-id>.execute-api.localhost.floci.io:4566` (printed by
+`infra/deploy.sh`)
 
 ---
 
@@ -14,7 +16,7 @@ Local: `http://localhost:3001` · Deployed: `https://school-bus-route-stop.verce
 
 | Field | Type | Source | Rule |
 |---|---|---|---|
-| `id` | uuid | server | immutable |
+| `id` | id | server | immutable; letters, digits, `-`, `_`, `:` |
 | `code` | string | client | required, 2–20, letters/numbers/hyphens, unique, stored upper-case |
 | `name` | string | client | required, 3–100, trimmed |
 | `area` | string | client | required, 2–100, trimmed |
@@ -25,8 +27,8 @@ Local: `http://localhost:3001` · Deployed: `https://school-bus-route-stop.verce
 
 | Field | Type | Source | Rule |
 |---|---|---|---|
-| `id` | uuid | server | immutable |
-| `route_id` | uuid | server | from the URL, never the body |
+| `id` | id | server | immutable; letters, digits, `-`, `_`, `:` |
+| `route_id` | id | server | from the URL, never the body |
 | `name` | string | client | required, 3–100 |
 | `landmark` | string \| null | client | optional, 3–150 |
 | `stop_order` | int | **server** | always 1..n, no gaps. Changed only via the reorder endpoint |
@@ -35,11 +37,11 @@ Local: `http://localhost:3001` · Deployed: `https://school-bus-route-stop.verce
 
 | Field | Type | Source | Rule |
 |---|---|---|---|
-| `id` | uuid | server | immutable |
+| `id` | id | server | immutable; letters, digits, `-`, `_`, `:` |
 | `plate_number` | string | client | required, 3–20, unique |
 | `capacity` | int | client | 1–100, default 40 |
-| `route_id` | uuid \| null | client | must exist |
-| `supervisor_id` | uuid \| null | client | must exist and have role `supervisor` |
+| `route_id` | id \| null | client | must exist |
+| `supervisor_id` | id \| null | client | must exist and have role `supervisor` |
 
 ### Route schedule
 
@@ -47,23 +49,27 @@ Local: `http://localhost:3001` · Deployed: `https://school-bus-route-stop.verce
 |---|---|---|---|
 | `run_type` | enum | client | `morning` or `afternoon`; one schedule per route per run |
 | `days_of_week` | int[] | client | 1–7 values, ISO (1 = Monday, 7 = Sunday), no repeats |
-| `bus_id` | uuid \| null | client | must exist |
+| `bus_id` | id \| null | client | must exist |
 | `active_from` / `active_to` | date \| null | client | `YYYY-MM-DD`; `active_to` null means open-ended |
 
 ### Trip
 
+A Trip is the **recurring run** for one route and one run type, in Ahmed's
+table design. It is not one row per day. Cancelling a single day sets
+`cancelled_date`.
+
 | Field | Type | Source | Rule |
 |---|---|---|---|
-| `id` | uuid | server | immutable |
-| `route_id` | uuid | client | must exist, be active and have ≥1 stop |
-| `bus_id` | uuid \| null | client | must not be double-booked for that slot |
-| `service_date` | date | client | `YYYY-MM-DD`, not in the past |
+| `id` | id | **server** | `trip:<route_id>:<run_type>` |
+| `route_id` | id | client | must exist, be active and have at least 1 stop |
+| `bus_id` | id \| null | client | must not be double-booked for that run |
 | `run_type` | enum | client | `morning` or `afternoon` |
 | `status` | enum | **server** | `active` on creation; only ever moves to `cancelled` |
-| `cancellation_reason` | string \| null | client on cancel | 3–200 |
-| `source` | enum | server | `manual` or `generated` |
+| `cancelled_date` | date \| null | client on cancel | `YYYY-MM-DD`, the day called off |
+| `cancellation_reason` | string \| null | client on cancel | 3 to 200 characters |
+| `source` | enum | server | `manual`, `generated` or `seed` |
 
-A route, a day and a run identify at most one active trip.
+A route has at most one `morning` trip and one `afternoon` trip.
 
 ---
 
@@ -88,15 +94,14 @@ A route, a day and a run identify at most one active trip.
 | POST | `/api/buses` | A | add a bus | 201 | 400, 401, 403, 404, 409, 415 |
 | GET | `/api/routes/:id/schedule` | A | the recurring pattern | 200 | 400, 401, 403 |
 | PUT | `/api/routes/:id/schedule` | A | set the recurring pattern | 200 | 400, 401, 403, 404, 415 |
-| GET | `/api/trips` | L | search by route, day, range, status | 200 | 400, 401, 429 |
+| GET | `/api/trips` | L | search by route, day, status, run | 200 | 400, 401, 429 |
 | GET | `/api/trips/:id` | L | one trip | 200 | 400, 401, 404 |
 | GET | `/api/trips/:id/impact` | A | who a cancellation would affect | 200 | 400, 401, 403, 404 |
 | POST | `/api/trips` | A | create one trip, conflict-checked | 201 | 400, 401, 403, 404, **409**, 415 |
 | PATCH | `/api/trips/:id/status` | A | cancel a trip | 200 | 400, 401, 403, 404, 409, 415 |
 | POST | `/api/trips/generate` | A | preview or commit generated trips | 200 / 201 | 400, 401, 403, 415, 429 |
-| GET | `/api/internal/cron/generate` | S | the scheduled run | 200 | 400, 401 |
-| GET | `/api/internal/events` | S | unpublished outbox events | 200 | 400, 401 |
-| POST | `/api/internal/events/ack` | S | mark events published | 200 | 400, 401 |
+| GET | `/api/internal/cron/generate` | S | the daily scheduled run | 200 | 401 |
+| POST | `/api/internal/events/retry` | S | resend anything unsent to the queue | 200 | 401 |
 
 ---
 
@@ -141,7 +146,7 @@ A partial list, a repeated id, or a stop from another route is `400`.
 `POST /api/trips`
 
 ```json
-{ "route_id": "…", "bus_id": "…", "service_date": "2026-03-01", "run_type": "morning" }
+{ "route_id": "route-cairo-demo", "bus_id": "bus-demo-1", "run_type": "morning" }
 ```
 
 ```http
@@ -155,10 +160,10 @@ HTTP/1.1 409 Conflict
     "details": {
       "conflicts": [
         { "code": "BUS_DOUBLE_BOOKED",
-          "message": "That bus is already running another morning trip on 2026-03-01." }
+          "message": "That bus is already running another morning trip on recurring." }
       ]
     },
-    "request_id": "…"
+    "request_id": "..."
   }
 }
 ```
@@ -168,60 +173,66 @@ HTTP/1.1 409 Conflict
 `POST /api/trips/generate`
 
 ```json
-{ "from": "2026-03-01", "to": "2026-03-07", "dry_run": true }
+{ "dry_run": true }
 ```
 
 ```json
 {
-  "trips": [ { "route_id": "…", "service_date": "2026-03-01", "run_type": "morning" } ],
+  "trips": [
+    { "route_id": "route-demo-nasr", "bus_id": "bus-demo-2", "run_type": "afternoon" }
+  ],
   "skipped": [
-    { "route_id": "…", "service_date": "2026-03-06", "run_type": "morning",
-      "reason": "not_a_service_day" },
-    { "route_id": "…", "service_date": "2026-03-03", "run_type": "morning",
-      "reason": "public_holiday" }
+    { "route_id": "route-demo-maadi", "run_type": "morning",
+      "reason": "trip_already_exists" }
   ],
   "summary": {
-    "from": "2026-03-01", "to": "2026-03-07", "days": 7, "schedules": 2,
-    "planned": 9, "skipped": 5,
-    "skipped_by_reason": { "not_a_service_day": 4, "public_holiday": 1 }
+    "schedules": 4, "planned": 1, "skipped": 3,
+    "skipped_by_reason": { "trip_already_exists": 3 }
   },
   "created": 0,
   "dry_run": true
 }
 ```
 
-Send `"dry_run": false` to commit; the response is `201` and `created` is the
-number of rows written.
+Send `"dry_run": false` to commit; the response is `201` and `created` is
+the number written.
 
-### Cancel a trip
+### Cancel a trip for a day
 
 `PATCH /api/trips/:id/status`
 
 ```json
-{ "status": "cancelled", "reason": "Bus 14 is in for repair" }
+{ "status": "cancelled", "reason": "Bus 14 is in for repair", "date": "2026-11-30" }
 ```
+
+`date` is optional and defaults to today.
 
 ```json
 {
-  "id": "…", "status": "cancelled", "service_date": "2026-03-01",
-  "run_type": "morning", "cancellation_reason": "Bus 14 is in for repair",
-  "cancelled_at": "2026-02-28T19:40:11.482Z",
+  "id": "trip:route-cairo-demo:morning",
+  "status": "cancelled",
+  "run_type": "morning",
+  "cancelled_date": "2026-11-30",
+  "cancellation_reason": "Bus 14 is in for repair",
+  "cancelled_at": "2026-11-29T19:40:11.482Z",
   "impact": {
     "stop_count": 3,
-    "stops": [ { "id": "…", "name": "Road 9 Corner", "stop_order": 1 } ],
+    "stops": [ { "id": "stop-demo-maadi-1", "name": "Road 9 Corner", "stop_order": 1 } ],
     "affected_students": 12,
     "affected_parents": 11
   },
-  "event_id": "…"
+  "event_id": "9f1c7a52-0b3e-4f1a-9c21-7d5a1e2f4b60",
+  "event_delivered": true
 }
 ```
 
-`event_id` is the outbox row written in the same transaction. It is what the
-Favorites & Alerts service eventually receives from SNS, and it doubles as
-that service's idempotency key.
+`event_id` is the message sent to Ali's queue, and it is his idempotency
+key. `event_delivered` is false when SQS could not be reached; the event is
+stored as unsent and the daily run retries it. The cancellation itself has
+still happened.
 
-`affected_students` and `affected_parents` are `null` when the Schedule &
-Arrival schema has not been applied yet; the cancellation still succeeds.
+`affected_students` and `affected_parents` are `null` when the `Students`
+table is not readable; the cancellation still succeeds.
 
 ---
 
