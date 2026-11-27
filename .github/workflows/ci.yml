@@ -70,19 +70,20 @@ jobs:
           fi
           echo "No secrets found."
 
-      - name: Commit the lock file
+      # Uploaded, not committed. The repository gives workflow tokens
+      # read-only access, so a push from here is refused with 403. Rather
+      # than giving the workflow write access, which is a wider permission
+      # than this one job needs, the file comes out as an artifact and a
+      # person commits it.
+      #
+      # Download it from the run page, or:
+      #   gh run download <run-id> -n package-lock
+      #   git add package-lock.json && git commit -m "Update package-lock.json"
+      - name: Upload the regenerated lock file
         if: >-
-          github.event_name == 'workflow_dispatch' &&
-          inputs.update_lockfile &&
-          steps.install.outputs.method == 'install'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git diff --quiet -- package-lock.json; then
-            echo "The lock file was already up to date."
-          else
-            git add package-lock.json
-            git commit -m "Update package-lock.json"
-            git push
-            echo "package-lock.json updated and pushed."
-          fi
+          github.event_name == 'workflow_dispatch' && inputs.update_lockfile
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-lock
+          path: package-lock.json
+          retention-days: 7
