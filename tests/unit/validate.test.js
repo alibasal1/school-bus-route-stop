@@ -7,8 +7,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const validate = require('../lib/validate');
-const dates = require('../lib/dates');
+const validate = require('../../lib/validate');
+const dates = require('../../lib/dates');
 
 test('text enforces the length rules from the data dictionary', () => {
   assert.equal(validate.text('Maadi Line', 'Route name', 3, 100), null);
@@ -35,11 +35,41 @@ test('optional text may be absent but must still be valid when present', () => {
   assert.match(validate.text('ab', 'Landmark', 3, 150, { required: false }), /between 3 and 150/);
 });
 
-test('uuid rejects anything that is not one', () => {
-  assert.equal(validate.uuid('11111111-1111-4111-8111-111111111111', 'Route id'), null);
-  assert.match(validate.uuid('does-not-exist', 'Route id'), /valid id/);
-  assert.match(validate.uuid("1' OR '1'='1", 'Route id'), /valid id/);
-  assert.match(validate.uuid(undefined, 'Route id'), /valid id/);
+test('id accepts the readable keys the team actually uses', () => {
+  // Ahmed's seed data, not UUIDs.
+  assert.equal(validate.id('route-cairo-demo', 'Route id'), null);
+  assert.equal(validate.id('trip:route-cairo-demo:morning', 'Route id'), null);
+  assert.equal(validate.id('11111111-1111-4111-8111-111111111111', 'Route id'), null);
+  assert.equal(validate.id('Stop_01', 'Stop id'), null);
+});
+
+test('id blocks SQL and NoSQL injection', () => {
+  // The allow-list has no space, quote, brace or dollar, so none of these
+  // can get through to a query.
+  assert.match(validate.id("1' OR '1'='1", 'Route id'), /letters, numbers/);
+  assert.match(validate.id("' OR 1=1 --", 'Route id'), /letters, numbers/);
+  assert.match(validate.id('{"$ne": null}', 'Route id'), /letters, numbers/);
+  assert.match(validate.id('../../etc/passwd', 'Route id'), /letters, numbers/);
+  assert.match(validate.id('a'.repeat(129), 'Route id'), /letters, numbers/);
+  assert.match(validate.id('', 'Route id'), /letters, numbers/);
+});
+
+test('id rejects a non-string, which is how NoSQL injection usually arrives', () => {
+  // A JSON body can carry an object where an id is expected. Passing
+  // {"$ne": null} straight to a query is the NoSQL version of ' OR 1=1, so
+  // the type check matters as much as the pattern.
+  assert.match(validate.id({ $ne: null }, 'Route id'), /letters, numbers/);
+  assert.match(validate.id(['route-1'], 'Route id'), /letters, numbers/);
+  assert.match(validate.id(42, 'Route id'), /letters, numbers/);
+  assert.match(validate.id(undefined, 'Route id'), /letters, numbers/);
+  assert.match(validate.id(null, 'Route id'), /letters, numbers/);
+});
+
+test('optionalId allows absent but still checks a value', () => {
+  assert.equal(validate.optionalId(undefined, 'Bus id'), null);
+  assert.equal(validate.optionalId('', 'Bus id'), null);
+  assert.equal(validate.optionalId('bus-01', 'Bus id'), null);
+  assert.match(validate.optionalId('bus 01', 'Bus id'), /letters, numbers/);
 });
 
 test('route code accepts the house format and rejects punctuation', () => {

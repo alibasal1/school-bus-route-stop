@@ -8,7 +8,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { planTrips, findConflicts, CONFLICT, SKIP } = require('../lib/tripPlanner');
+const { planTrips, findConflicts, CONFLICT, SKIP } = require('../../lib/tripPlanner');
 
 const ROUTE_A = '11111111-1111-4111-8111-111111111111';
 const ROUTE_B = '22222222-2222-4222-8222-222222222222';

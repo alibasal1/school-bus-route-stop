@@ -16,8 +16,8 @@ const service = require('../services/routes');
 const validate = require('../lib/validate');
 const { badRequest, notFound, asyncHandler } = require('../middleware/errors');
 const { cacheControl } = require('../middleware/security');
-const { today, addDays, daysBetween } = require('../lib/dates');
-const { MAX_GENERATION_DAYS } = require('../lib/tripPlanner');
+const { today } = require('../lib/dates');
+const events = require('../services/events');
 
 /** Rejects a body that is not a JSON object, which would make every field undefined. */
 function body(req) {
@@ -94,7 +94,7 @@ const listRoutes = asyncHandler(async (req, res) => {
 
 // GET /api/routes/:id
 const getRoute = asyncHandler(async (req, res) => {
-  fail(validate.uuid(req.params.id, 'Route id'));
+  fail(validate.id(req.params.id, 'Route id'));
   const route = await service.getRoute(req.params.id);
   if (!route) throw notFound('That route does not exist.');
   cacheControl(res, 60);
@@ -120,7 +120,7 @@ const createRoute = asyncHandler(async (req, res) => {
 
 // PUT /api/routes/:id
 const updateRoute = asyncHandler(async (req, res) => {
-  fail(validate.uuid(req.params.id, 'Route id'));
+  fail(validate.id(req.params.id, 'Route id'));
   const input = body(req);
   fail(validate.rejectServerOwnedFields(input, ['id', 'created_at', 'updated_at']));
 
@@ -142,7 +142,7 @@ const updateRoute = asyncHandler(async (req, res) => {
 
 // DELETE /api/routes/:id
 const deleteRoute = asyncHandler(async (req, res) => {
-  fail(validate.uuid(req.params.id, 'Route id'));
+  fail(validate.id(req.params.id, 'Route id'));
   const route = await service.deleteRoute(req.params.id);
   if (!route) throw notFound('That route does not exist.');
   res.status(204).end();
@@ -155,7 +155,7 @@ const deleteRoute = asyncHandler(async (req, res) => {
 
 // POST /api/routes/:id/stops
 const addStop = asyncHandler(async (req, res) => {
-  fail(validate.uuid(req.params.id, 'Route id'));
+  fail(validate.id(req.params.id, 'Route id'));
   const input = body(req);
   fail(validate.rejectServerOwnedFields(input, ['id', 'route_id', 'stop_order']));
   fail(
@@ -180,7 +180,7 @@ const addStop = asyncHandler(async (req, res) => {
 
 // PUT /api/stops/:id
 const updateStop = asyncHandler(async (req, res) => {
-  fail(validate.uuid(req.params.id, 'Stop id'));
+  fail(validate.id(req.params.id, 'Stop id'));
   const input = body(req);
   // stop_order is deliberately not accepted here. Changing one stop's number
   // in isolation is what produces gaps and duplicates; ordering goes through
@@ -202,7 +202,7 @@ const updateStop = asyncHandler(async (req, res) => {
 
 // DELETE /api/stops/:id
 const deleteStop = asyncHandler(async (req, res) => {
-  fail(validate.uuid(req.params.id, 'Stop id'));
+  fail(validate.id(req.params.id, 'Stop id'));
   const stop = await service.deleteStop(req.params.id);
   if (!stop) throw notFound('That stop does not exist.');
   res.status(204).end();
@@ -211,7 +211,7 @@ const deleteStop = asyncHandler(async (req, res) => {
 
 // PUT /api/routes/:id/stops/order
 const reorderStops = asyncHandler(async (req, res) => {
-  fail(validate.uuid(req.params.id, 'Route id'));
+  fail(validate.id(req.params.id, 'Route id'));
   const input = body(req);
 
   const hasOrder = Array.isArray(input.stop_ids);
@@ -222,11 +222,11 @@ const reorderStops = asyncHandler(async (req, res) => {
 
   if (hasOrder) {
     if (input.stop_ids.length > 200) fail('A route cannot have more than 200 stops.');
-    for (const id of input.stop_ids) fail(validate.uuid(id, 'Stop id'));
+    for (const id of input.stop_ids) fail(validate.id(id, 'Stop id'));
   } else {
     fail(
       validate.first(
-        validate.uuid(input.move.stop_id, 'Stop id'),
+        validate.id(input.move.stop_id, 'Stop id'),
         validate.positiveInteger(input.move.to_position, 'Position', 200)
       )
     );
@@ -257,8 +257,8 @@ const createBus = asyncHandler(async (req, res) => {
   fail(
     validate.first(
       validate.plateNumber(input.plate_number),
-      validate.optionalUuid(input.route_id, 'Route id'),
-      validate.optionalUuid(input.supervisor_id, 'Supervisor id')
+      validate.optionalId(input.route_id, 'Route id'),
+      validate.optionalId(input.supervisor_id, 'Supervisor id')
     )
   );
   if (input.capacity !== undefined) {
@@ -281,19 +281,19 @@ const createBus = asyncHandler(async (req, res) => {
 
 // GET /api/routes/:id/schedule
 const listSchedules = asyncHandler(async (req, res) => {
-  fail(validate.uuid(req.params.id, 'Route id'));
+  fail(validate.id(req.params.id, 'Route id'));
   res.status(200).json({ items: await service.listSchedules(req.params.id) });
 });
 
 // PUT /api/routes/:id/schedule
 const upsertSchedule = asyncHandler(async (req, res) => {
-  fail(validate.uuid(req.params.id, 'Route id'));
+  fail(validate.id(req.params.id, 'Route id'));
   const input = body(req);
   fail(
     validate.first(
       validate.runType(input.run_type),
       validate.daysOfWeek(input.days_of_week),
-      validate.optionalUuid(input.bus_id, 'Bus id'),
+      validate.optionalId(input.bus_id, 'Bus id'),
       validate.isoDate(input.active_from, 'active_from'),
       input.active_to == null ? null : validate.isoDate(input.active_to, 'active_to')
     )
@@ -323,21 +323,14 @@ const listTrips = asyncHandler(async (req, res) => {
   const { page, limit } = pagination(req.query, { defaultLimit: 50, maxLimit: 200 });
   const query = req.query;
 
-  if (query.route_id !== undefined) fail(validate.uuid(query.route_id, 'route_id'));
+  if (query.route_id !== undefined) fail(validate.id(query.route_id, 'route_id'));
   if (query.date !== undefined) fail(validate.isoDate(query.date, 'date'));
-  if (query.from !== undefined) fail(validate.isoDate(query.from, 'from'));
-  if (query.to !== undefined) fail(validate.isoDate(query.to, 'to'));
   if (query.status !== undefined) fail(validate.tripStatus(query.status));
   if (query.run_type !== undefined) fail(validate.runType(query.run_type));
-  if (query.from && query.to && query.to < query.from) {
-    fail('to must not be before from.');
-  }
 
   const result = await service.searchTrips({
     route_id: query.route_id ?? null,
     date: query.date ?? null,
-    from: query.from ?? null,
-    to: query.to ?? null,
     status: query.status ?? null,
     run_type: query.run_type ?? null,
     page,
@@ -349,7 +342,7 @@ const listTrips = asyncHandler(async (req, res) => {
 
 // GET /api/trips/:id
 const getTrip = asyncHandler(async (req, res) => {
-  fail(validate.uuid(req.params.id, 'Trip id'));
+  fail(validate.id(req.params.id, 'Trip id'));
   const trip = await service.getTrip(req.params.id);
   if (!trip) throw notFound('That trip does not exist.');
   res.status(200).json(trip);
@@ -358,24 +351,29 @@ const getTrip = asyncHandler(async (req, res) => {
 // POST /api/trips
 const createTrip = asyncHandler(async (req, res) => {
   const input = body(req);
-  fail(validate.rejectServerOwnedFields(input, ['id', 'status', 'created_at', 'cancelled_at']));
+  fail(
+    validate.rejectServerOwnedFields(input, [
+      'id',
+      'status',
+      'created_at',
+      'cancelled_at',
+      'cancelled_date'
+    ])
+  );
   fail(
     validate.first(
-      validate.uuid(input.route_id, 'Route id'),
-      validate.optionalUuid(input.bus_id, 'Bus id'),
-      validate.isoDate(input.service_date, 'service_date'),
+      validate.id(input.route_id, 'Route id'),
+      validate.optionalId(input.bus_id, 'Bus id'),
       validate.runType(input.run_type)
     )
   );
-  // A trip in the past cannot be run and is almost always a mistyped year.
-  if (input.service_date < today()) {
-    fail('service_date cannot be in the past.');
-  }
 
+  // A trip is the recurring run for one route and one run type, in Ahmed's
+  // table design. There is no per-day trip to date, so no service_date here;
+  // the date only appears when a single day is cancelled.
   const trip = await service.createTrip({
     route_id: input.route_id,
     bus_id: input.bus_id ?? null,
-    service_date: input.service_date,
     run_type: input.run_type
   });
   res.status(201).location(`/api/trips/${trip.id}`).json(trip);
@@ -384,7 +382,7 @@ const createTrip = asyncHandler(async (req, res) => {
 
 // GET /api/trips/:id/impact
 const tripImpact = asyncHandler(async (req, res) => {
-  fail(validate.uuid(req.params.id, 'Trip id'));
+  fail(validate.id(req.params.id, 'Trip id'));
   const trip = await service.getTrip(req.params.id);
   if (!trip) throw notFound('That trip does not exist.');
   res.status(200).json(await service.tripImpact(trip));
@@ -392,7 +390,7 @@ const tripImpact = asyncHandler(async (req, res) => {
 
 // PATCH /api/trips/:id/status
 const cancelTrip = asyncHandler(async (req, res) => {
-  fail(validate.uuid(req.params.id, 'Trip id'));
+  fail(validate.id(req.params.id, 'Trip id'));
   const input = body(req);
   fail(validate.tripStatus(input.status));
 
@@ -404,8 +402,15 @@ const cancelTrip = asyncHandler(async (req, res) => {
   }
   fail(validate.text(input.reason, 'Reason', 3, 200));
 
+  // Which day is being cancelled. Ahmed's Trips table records this in
+  // cancelled_date, and it is what the parents' alert says. Defaults to
+  // today, which is what "the bus is not running" almost always means.
+  const date = input.date ?? today();
+  fail(validate.isoDate(date, 'date'));
+
   const result = await service.cancelTrip(req.params.id, {
     reason: input.reason.trim(),
+    date,
     userId: req.user.id
   });
   if (!result) throw notFound('That trip does not exist.');
@@ -416,30 +421,16 @@ const cancelTrip = asyncHandler(async (req, res) => {
 // POST /api/trips/generate
 const generateTrips = asyncHandler(async (req, res) => {
   const input = body(req);
-  const from = input.from ?? today();
-  const to = input.to ?? addDays(from, 13);
-
-  fail(
-    validate.first(
-      validate.isoDate(from, 'from'),
-      validate.isoDate(to, 'to'),
-      validate.optionalUuid(input.route_id, 'Route id')
-    )
-  );
-  if (daysBetween(from, to) < 0) fail('to must not be before from.');
-  if (daysBetween(from, to) + 1 > MAX_GENERATION_DAYS) {
-    fail(`A generation run covers at most ${MAX_GENERATION_DAYS} days.`);
-  }
+  fail(validate.optionalId(input.route_id, 'Route id'));
   if (input.dry_run !== undefined && typeof input.dry_run !== 'boolean') {
     fail('dry_run must be true or false.');
   }
 
   const result = await service.generateTrips({
-    from,
-    to,
     routeId: input.route_id ?? null,
-    // Default to a preview. Generating two months of trips is not something
-    // to do by accident, so writing has to be asked for explicitly.
+    // Default to a preview. Writing has to be asked for explicitly, so an
+    // admin always sees what would be created, and why each schedule was
+    // skipped, before anything happens.
     dryRun: input.dry_run !== false,
     userId: req.user.id ?? null
   });
@@ -450,63 +441,41 @@ const generateTrips = asyncHandler(async (req, res) => {
   }
 });
 
-// GET /api/internal/cron/generate?days=21
+// GET /api/internal/cron/generate
 //
-// The scheduled run. Kept separate from the admin endpoint because a cron
-// call cannot carry a body and must not be a preview: its whole purpose is
-// to write. It rolls the window forward from today, so the timetable always
-// reaches a few weeks ahead without anyone opening the admin page.
+// The daily scheduled run, called by EventBridge. Separate from the admin
+// endpoint because it must never be a preview: its whole purpose is to
+// write. It also sweeps any event whose SQS send failed earlier, so a queue
+// that was briefly unreachable does not cost anyone their alert.
 const cronGenerateTrips = asyncHandler(async (req, res) => {
-  const days = Number.parseInt(req.query.days ?? '21', 10);
-  if (!Number.isInteger(days) || days < 1 || days > MAX_GENERATION_DAYS) {
-    throw badRequest(`days must be a whole number between 1 and ${MAX_GENERATION_DAYS}.`);
-  }
+  const result = await service.generateTrips({ dryRun: false, userId: null });
+  const sweep = await events.retryUnsent({ limit: 50 });
 
-  const from = today();
-  const to = addDays(from, days - 1);
-  const result = await service.generateTrips({ from, to, dryRun: false, userId: null });
-
-  // Logged as one line so a scheduled run that silently stops creating
-  // trips is visible in the platform logs without anyone opening the app.
+  // One line per run, so a scheduled job that has quietly stopped working
+  // is visible in CloudWatch without anyone opening the app.
   console.log(
     JSON.stringify({
       level: 'info',
       msg: 'scheduled trip generation',
       request_id: res.locals.requestId,
-      from,
-      to,
       planned: result.summary.planned,
-      created: result.created
+      created: result.created,
+      events_retried: sweep.retried,
+      events_delivered: sweep.delivered
     })
   );
 
-  res.status(200).json({ from, to, created: result.created, summary: result.summary });
+  res.status(200).json({ created: result.created, summary: result.summary, events: sweep });
   await audit(req, res, 'trip.generate.scheduled', 'route', 'all');
 });
 
-// ============================================================================
-// Internal: the outbox drain used by the event forwarder
-// ============================================================================
-
-// GET /api/internal/events
-const listPendingEvents = asyncHandler(async (req, res) => {
-  const limit = Number.parseInt(req.query.limit ?? '100', 10);
-  if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
-    throw badRequest('limit must be a whole number between 1 and 500.');
-  }
-  res.status(200).json({ items: await service.pendingEvents(limit) });
-});
-
-// POST /api/internal/events/ack
-const ackEvents = asyncHandler(async (req, res) => {
-  const input = body(req);
-  if (!Array.isArray(input.event_ids) || input.event_ids.length === 0) {
-    throw badRequest('Send event_ids as a non-empty array.');
-  }
-  if (input.event_ids.length > 500) throw badRequest('Acknowledge at most 500 events at a time.');
-  for (const id of input.event_ids) fail(validate.uuid(id, 'Event id'));
-
-  res.status(200).json({ acknowledged: await service.markEventsPublished(input.event_ids) });
+// POST /api/internal/events/retry
+//
+// Resend anything still unsent. The cron does this too; having it as an
+// endpoint means a failed delivery can be pushed through during the demo
+// without waiting for tomorrow.
+const retryEvents = asyncHandler(async (req, res) => {
+  res.status(200).json(await events.retryUnsent({ limit: 50 }));
 });
 
 // ============================================================================
@@ -525,7 +494,7 @@ const health = (req, res) => {
 
 // GET /api/ready — readiness: can it actually reach the database?
 // Separating the two is what makes a deployment diagnosable: health up and
-// ready down means the code shipped fine and DATABASE_URL is wrong.
+// ready down means the code shipped fine and the tables or the IAM role are wrong.
 const ready = asyncHandler(async (req, res) => {
   try {
     await service.ping();
@@ -563,8 +532,7 @@ module.exports = {
   cancelTrip,
   generateTrips,
   cronGenerateTrips,
-  listPendingEvents,
-  ackEvents,
+  retryEvents,
   health,
   ready
 };

@@ -16,7 +16,7 @@ const server = app.listen(PORT, () => {
       service: 'route-stop',
       msg: `Route & Stop API listening on http://localhost:${PORT}`,
       environment: process.env.NODE_ENV || 'development',
-      database: process.env.DATABASE_URL ? 'configured' : 'MISSING',
+      database: `DynamoDB (${process.env.AWS_ENDPOINT_URL || 'real AWS'})`,
       rate_limiter: process.env.UPSTASH_REDIS_REST_URL ? 'upstash' : 'in-memory (development)',
       turnstile: process.env.TURNSTILE_SECRET_KEY ? 'enabled' : 'disabled'
     })

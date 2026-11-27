@@ -91,9 +91,22 @@ function errorHandler(error, req, res, _next) {
     const code = error.code && CODES[error.code] ? error.code : 'VALIDATION_ERROR';
     return sendError(res, CODES[code], code, error.message, error.details);
   }
-  if (error.code === 'DB_NOT_CONFIGURED') {
+  // DynamoDB refusing the call is a configuration or permissions problem,
+  // not something the caller did. The reason goes to the log; the caller
+  // gets a 503 and the request id.
+  if (
+    error.name === 'ResourceNotFoundException' ||
+    error.name === 'AccessDeniedException' ||
+    error.name === 'UnrecognizedClientException' ||
+    error.code === 'DB_NOT_CONFIGURED'
+  ) {
     console.error(
-      JSON.stringify({ level: 'error', request_id: requestId, msg: 'DATABASE_URL missing' })
+      JSON.stringify({
+        level: 'error',
+        request_id: requestId,
+        msg: 'database unavailable',
+        error: error.name || error.code,
+      })
     );
     return sendError(
       res,

@@ -120,12 +120,10 @@ router.post(
 // requireServiceToken, not requireAuth: these callers have no session, they
 // present a shared secret from the platform's encrypted environment.
 router.post('/internal/trips/generate', requireServiceToken, controller.generateTrips);
-router.get('/internal/events', requireServiceToken, controller.listPendingEvents);
-router.post('/internal/events/ack', requireServiceToken, controller.ackEvents);
+router.post('/internal/events/retry', requireServiceToken, controller.retryEvents);
 
-// The weekly scheduled run. GET with no body, because that is all Vercel Cron
-// can send; the window and the commit flag come from the query string so the
-// schedule in vercel.json stays the single place the job is configured.
+// The daily scheduled run, called by the EventBridge rule that deploy.sh
+// creates. GET with no body, because that is all the rule sends.
 router.get('/internal/cron/generate', requireScheduler, controller.cronGenerateTrips);
 
 module.exports = router;

@@ -34,8 +34,27 @@ function reject(res, message) {
  * and in the Postman tests without a Cloudflare account. The warning above
  * makes that visible in the logs of a production deployment.
  */
+let skipLogged = false;
+
 function verifyTurnstile(req, res, next) {
-  if (!ENABLED) return next();
+  if (!ENABLED) {
+    // Floci has no Turnstile secret, and failing every write there would
+    // make the whole service undemonstrable. Skipping is recorded once per
+    // container so it is never a silent hole: the log says the control is
+    // off, and docs/threat-model.md says the same.
+    if (!skipLogged) {
+      console.warn(
+        JSON.stringify({
+          level: 'warn',
+          event: 'SECURITY',
+          kind: 'turnstile_skipped',
+          msg: 'TURNSTILE_SECRET_KEY is not set, bot check skipped for all writes',
+        })
+      );
+      skipLogged = true;
+    }
+    return next();
+  }
 
   const token = req.get('X-Turnstile-Token');
   if (!token) {

@@ -8,7 +8,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { planFullOrder, planMove, planAfterDelete, nextPosition, isContiguous } =
-  require('../lib/resequence');
+  require('../../lib/resequence');
 
 const stops = [
   { id: 'a', stop_order: 1 },
