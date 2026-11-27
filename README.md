@@ -102,6 +102,51 @@ node scripts/make-test-sessions.js
 Detail, including what to do when something fails:
 [`infra/README.md`](infra/README.md).
 
+## The seven AWS services
+
+| Service | What it does here |
+|---|---|
+| **Lambda** | runs the API. `lambda.js` wraps the same `app.js` that `server.js` runs locally |
+| **API Gateway** | the public address. Only this service's routes, plus OPTIONS. Throttling 10 rps, burst 20 |
+| **DynamoDB** | the data. Ahmed's table design, shared by the three services |
+| **SQS** (sender) | trip events to Ali's queue, so a cancellation reaches parents even if his service is down |
+| **EventBridge** | a daily rule that generates trips and resends any event whose send failed |
+| **CloudWatch Logs** | one JSON line per request, a metric filter on the SECURITY lines, and an alarm |
+| **IAM** | least privilege: write own tables, read-only Users and Sessions, send to one queue |
+
+## Endpoints
+
+`A` = admin, `L` = any signed-in user, `S` = service key.
+
+| Method | Path | Who | Purpose |
+|---|---|---|---|
+| GET | `/api/health` | — | is the service running |
+| GET | `/api/ready` | — | can it reach DynamoDB |
+| GET | `/api/routes` | L | ranked search, paged |
+| GET | `/api/routes/:id` | L | one route with its stops |
+| POST | `/api/routes` | A | create a route |
+| PUT | `/api/routes/:id` | A | rename, change area, retire |
+| DELETE | `/api/routes/:id` | A | delete a route with no trips |
+| POST | `/api/routes/:id/stops` | A | add a stop |
+| PUT | `/api/routes/:id/stops/order` | A | reorder every stop atomically |
+| PUT | `/api/stops/:id` | A | rename a stop |
+| DELETE | `/api/stops/:id` | A | delete a stop, closing the gap |
+| GET | `/api/buses` | A | list buses |
+| POST | `/api/buses` | A | add a bus |
+| GET | `/api/routes/:id/schedule` | A | the saved pattern |
+| PUT | `/api/routes/:id/schedule` | A | set the pattern |
+| GET | `/api/trips` | L | search by route, day, status, run |
+| GET | `/api/trips/:id` | L | one trip |
+| GET | `/api/trips/:id/impact` | A | who a cancellation would affect |
+| POST | `/api/trips` | A | create one trip, conflict checked |
+| PATCH | `/api/trips/:id/status` | A | cancel a run for a day |
+| POST | `/api/trips/generate` | A | preview or commit generated trips |
+| GET | `/api/internal/cron/generate` | S | the daily scheduled run |
+| POST | `/api/internal/events/retry` | S | resend anything unsent to the queue |
+
+Full contract with examples and error codes:
+[`docs/api-contract.md`](docs/api-contract.md).
+
 ## Git rules
 
 - Small commits on `main`, pushed after each step.

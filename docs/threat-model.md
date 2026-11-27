@@ -192,6 +192,41 @@ is what actually limits automated writes on Floci.
 
 ---
 
+
+## STRIDE summary
+
+Every row names the file that holds the control and the test that proves
+it. A control with no test is a claim, not a control.
+
+| STRIDE | Threat | Control, and the file | Test |
+|---|---|---|---|
+| **S**poofing | A stolen, guessed or expired token used as someone else | Sessions keyed by the SHA-256 of the token, expiry in Unix seconds, one message for unknown and expired. `middleware/auth.js` | `tests/unit/auth.test.js` "an unknown token answers 401 with the same message as an expired one"; ST-01, ST-02, ST-03 |
+| **S**poofing | A caller pretending to be the scheduled job | Shared key compared with `timingSafeEqual`, route closed when no key is set. `middleware/auth.js` | `tests/unit/auth.test.js` "the internal endpoint refuses a wrong or missing service key"; ST-10 |
+| **T**ampering | Injection through an id: `{"$ne": null}`, `' OR 1=1` | Allow-list of letters, digits, `-`, `_`, `:`, and a type check before the pattern. Values only ever as `ExpressionAttributeValues`. `lib/validate.js`, `services/routes.js` | `tests/unit/validate.test.js` "id blocks SQL and NoSQL injection"; ST-05 |
+| **T**ampering | The client setting fields it does not own | `id`, `status`, `cancelled_date`, `stop_order` refused, not ignored. `controllers/routes.js` | `tests/api/routes.test.js` "a client-chosen id is refused rather than ignored" |
+| **T**ampering | A half-applied stop reorder leaving a gap | The whole permutation in one `TransactWriteItems`, and only one function sets `stop_order`. `services/routes.js`, `lib/resequence.js` | `tests/api/routes.test.js` "a partial list is refused and nothing moves" |
+| **R**epudiation | Nobody can say who cancelled a month of trips | One `AUDIT` line per state-changing action, with user, role, resource and status. `services/routes.js` | ST-11 (the log lines), and the AUDIT lines in `evidence/deploy.txt` |
+| **I**nformation disclosure | A token leaking through the logs | Bodies, Authorization headers, tokens and query strings are never logged; only the user id. `middleware/logger.js` | ST-09 greps the log group for `bearer` and `token=` |
+| **I**nformation disclosure | The API confirming which tokens exist | Identical 401 wording for unknown and expired. `middleware/auth.js` | `tests/unit/auth.test.js`, ST-02 and ST-03 compared |
+| **D**enial of service | A script exhausting the shared Floci | Rate limits keyed on `requestContext.http.sourceIp`, never `X-Forwarded-For`, plus API Gateway throttling. `middleware/rateLimit.js`, `infra/deploy.sh` | ST-07, including a forged `X-Forwarded-For` |
+| **D**enial of service | One request asking for unbounded work | Body capped at 32 kb, `limit` capped, reorder capped at 100 stops. `app.js`, `controllers/routes.js` | `tests/api/routes.test.js` 415 and limit tests; ST-06 |
+| **E**levation of privilege | A parent doing an admin action | `requireAuth` and `requireRole` as two separate guards, applied in `routes/routes.js`; the role is read from the Users table | `tests/unit/auth.test.js` "requireRole answers 403"; `tests/api/routes.test.js` "a parent may NOT create a route"; ST-04 |
+| **E**levation of privilege | A compromised function reaching the team's data | IAM: write own tables, **read only** `Users` and `Sessions`, `sqs:SendMessage` on one ARN, own log group, no `"*"`. `infra/deploy.sh` | ST-09 reads the deployed policy back |
+
+### The two links to other services
+
+**The shared `Sessions` table.** This service reads it and never writes it,
+so it cannot create or extend a session. A compromise here cannot mint a
+login. The read-only split is in the IAM policy, not only in the code, so
+it holds even if the code is wrong.
+
+**The SQS link to Ali.** Send only, to one queue ARN. This service cannot
+read his queue, delete from it, or reach any other. The message carries no
+personal data: a route code, a run type, a date and a reason. The parents it
+concerns are worked out on his side, from the stop ids. Delivery is
+at-least-once, so `event_id` is his idempotency key, and sending the same
+cancellation twice must produce one alert (ST-09 step 5).
+
 ## Risk summary
 
 | # | Threat | Likelihood | Impact | After controls |
