@@ -56,6 +56,52 @@ function logger(req, res, next) {
   next();
 }
 
+/**
+ * One SECURITY line for a refused request.
+ *
+ * This is what auth.js and rateLimit.js call when they turn a request away.
+ * It exists for two reasons:
+ *   1. CloudWatch. infra/deploy.sh puts a metric filter on
+ *      { $.event = "SECURITY" } and an alarm above 20 in five minutes, so a
+ *      burst of refusals becomes a number on a graph instead of a line
+ *      nobody reads.
+ *   2. Investigating afterwards. The request id here is the same one the
+ *      caller was given in the error body, so a complaint can be traced to
+ *      an exact line.
+ *
+ * The line starts with the word SECURITY so it can also be found with a
+ * plain grep, not only with a JSON filter.
+ *
+ * What goes in: what was refused, where from, and which user if known.
+ * What NEVER goes in: the token, the Authorization header, the body, the
+ * query string. Lecture 7's point is that logs are themselves sensitive: a
+ * log holding a bearer token hands anyone with log access a working login.
+ * The user id is safe, because it cannot be used to impersonate anyone.
+ *
+ * @param {object} req
+ * @param {object} res
+ * @param {string} reason  short code, e.g. auth_missing_token
+ * @param {object} extra   anything else safe to record
+ */
+function securityLog(req, res, reason, extra = {}) {
+  console.warn(
+    `SECURITY ${JSON.stringify({
+      event: 'SECURITY',
+      level: 'warn',
+      service: 'route-stop',
+      reason,
+      method: req.method,
+      path: req.path ? req.path.split('?')[0] : null,
+      request_id: res.locals ? res.locals.requestId : null,
+      status: res.statusCode,
+      user_id: req.user ? req.user.id : null,
+      ip: req.awsEvent?.requestContext?.http?.sourceIp ?? req.ip ?? null,
+      ...extra
+    })}`
+  );
+}
+
 module.exports = logger;
 module.exports.logger = logger;
 module.exports.requestContext = requestContext;
+module.exports.securityLog = securityLog;
