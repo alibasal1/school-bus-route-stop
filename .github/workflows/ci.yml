@@ -1,0 +1,88 @@
+name: CI
+
+# Runs the tests on GitHub's servers, which have network access.
+#
+# Why this exists: the tests kept being written and never run, and that is
+# exactly how the securityLog bug shipped (auth.js imported a function
+# logger.js did not export, so every 401 became a 500). One real run would
+# have caught it in seconds. From now on every push gets that run.
+#
+# The "update-lockfile" input regenerates package-lock.json and commits it,
+# for when package.json has changed and no laptop is handy.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      update_lockfile:
+        description: 'Regenerate package-lock.json and commit it'
+        type: boolean
+        default: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # npm ci needs a lock file that matches package.json. It does not at
+      # the moment, so this reports that clearly instead of failing with a
+      # wall of npm output, and falls back to npm install so the tests
+      # still run.
+      - name: Install
+        id: install
+        run: |
+          if npm ci --no-audit --no-fund; then
+            echo "method=ci" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::npm ci failed, so package-lock.json is out of step with package.json. Falling back to npm install. Run this workflow manually with update_lockfile to fix it."
+            npm install --no-audit --no-fund
+            echo "method=install" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Unit tests first: they need no AWS SDK and no supertest, so if the
+      # install is broken these still say something useful.
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: API tests (Jest and Supertest)
+        run: npm run test:api
+
+      # Belt and braces. The repo should never contain a credential, and a
+      # person reviewing a diff will not always notice one.
+      - name: Check for secrets
+        run: |
+          if git grep -nIE "(AKIA[0-9A-Z]{16}|aws_secret_access_key|BEGIN [A-Z ]*PRIVATE KEY|postgres://[^ ]*:[^ ]*@)" -- ':!*.md' ':!.github/*'; then
+            echo "::error::Something that looks like a credential is committed."
+            exit 1
+          fi
+          if git ls-files | grep -E '(^|/)\.env$|\.test-tokens'; then
+            echo "::error::A secret file is tracked by git."
+            exit 1
+          fi
+          echo "No secrets found."
+
+      - name: Commit the lock file
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          inputs.update_lockfile &&
+          steps.install.outputs.method == 'install'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- package-lock.json; then
+            echo "The lock file was already up to date."
+          else
+            git add package-lock.json
+            git commit -m "Update package-lock.json"
+            git push
+            echo "package-lock.json updated and pushed."
+          fi
