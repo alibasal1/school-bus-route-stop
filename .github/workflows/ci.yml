@@ -60,7 +60,10 @@ jobs:
       # person reviewing a diff will not always notice one.
       - name: Check for secrets
         run: |
-          if git grep -nIE "(AKIA[0-9A-Z]{16}|aws_secret_access_key|BEGIN [A-Z ]*PRIVATE KEY|postgres://[^ ]*:[^ ]*@)" -- ':!*.md' ':!.github/*'; then
+          # aws_secret_access_key needs a real value after it to count. The
+          # bare words appear in the security test output, where ST-09 records
+          # the pattern it searched for.
+          if git grep -nIE "(AKIA[0-9A-Z]{16}|aws_secret_access_key[\"' ]*[:=][\"' ]*[A-Za-z0-9/+]{20,}|BEGIN [A-Z ]*PRIVATE KEY|postgres://[^ ]*:[^ ]*@)" -- ':!*.md' ':!.github/*'; then
             echo "::error::Something that looks like a credential is committed."
             exit 1
           fi
