@@ -1,0 +1,37 @@
+# ST-09: No secrets in the Lambda env, the git history or the logs
+# API: http://b92afbc138.execute-api.localhost.floci.io:4566
+# Run: 2026-11-27T04:46:18Z
+
+Lambda environment, names only (values are not printed):
+$ aws lambda get-function-configuration --function-name route-stop-api --query "keys(Environment.Variables)" --output text
+NODE_ENV	CORS_ORIGINS	AWS_ENDPOINT_URL	ALERTS_QUEUE_URL	INTERNAL_API_KEY
+
+
+Git history: lines that look like a key, a token or a password (count only):
+$ git log -p --all | grep -ciE "(aws_secret_access_key|api[_-]?key|secret[_-]?key|password|token)[\"' ]*[:=][\"' ]*[A-Za-z0-9/+]{20,}" || true
+0
+
+
+$ git log --all --name-only --format= | grep -iE "(^|/)\.env$|\.test-tokens|\.pem$" | sort -u | wc -l
+0
+
+
+Logs: does any test token appear in the log group? (count only)
+$ aws logs filter-log-events --log-group-name /aws/lambda/route-stop-api --query "events[].message" --output text > /tmp/rs-logs.txt 2>/dev/null || aws logs filter-log-events --log-group-name /aws/lambda/route-stop-api --query "events[].message" --output text > rs-logs.tmp; f=$( [ -s rs-logs.tmp ] && echo rs-logs.tmp || echo /tmp/rs-logs.txt ); echo "log lines: $(wc -l < $f)"; echo "parent1 token found: $(grep -c "$PARENT1_TOKEN" $f)"; echo "admin token found: $(grep -c "$ADMIN_TOKEN" $f)"; echo "Bearer found: $(grep -ci "bearer [0-9a-f]\{20,\}" $f)"; rm -f rs-logs.tmp /tmp/rs-logs.txt
+log lines: 1
+parent1 token found: 0
+admin token found: 0
+Bearer found: 0
+
+
+(The "log lines" count is 1 because --output text puts all messages on one line; the token searches
+still look through every message.)
+---------------------------------------------------------------
+RESULT: PARTIAL FAIL.
+- Git history: PASS. No key, token or password pattern, and no .env or token file was ever committed.
+- Logs: PASS. No test token and no Bearer value in the log group.
+- Lambda environment: FAIL. INTERNAL_API_KEY is stored as a plain value in the Lambda settings
+  (infra/deploy.sh, step 5), and the same key is inside the EventBridge target Input (step 7).
+  Anyone who can read the function settings can read it. The value is not printed here.
+  Fix to do: keep it in Secrets Manager (config/secrets.js already loads SECRET_ID at cold start)
+  and leave only SECRET_ID in the environment.

@@ -1,0 +1,18 @@
+# ST-10: The internal endpoint refuses a wrong service key
+# API: http://b92afbc138.execute-api.localhost.floci.io:4566
+# Run: 2026-11-27T04:46:29Z
+
+$ curl -s -w "\nHTTP %{http_code}" $API/api/internal/cron/generate
+{"error":{"code":"UNAUTHENTICATED","message":"Invalid scheduler credential.","request_id":"0d27789d-af37-4a00-b39e-e103df13baf2"}}
+HTTP 401
+
+$ curl -s -w "\nHTTP %{http_code}" -H "X-Internal-Key: wrong-key-0123456789" $API/api/internal/cron/generate
+{"error":{"code":"UNAUTHENTICATED","message":"Invalid scheduler credential.","request_id":"29fa4617-8fda-4175-8317-fb502fad04e0"}}
+HTTP 401
+
+$ curl -s -w "\nHTTP %{http_code}" -X POST -H "X-Internal-Key: wrong-key-0123456789" -H "Content-Type: application/json" -d "{}" $API/api/internal/events/retry
+{"error":{"code":"UNAUTHENTICATED","message":"Invalid internal key.","request_id":"9d2fb8f6-8e90-4c26-8891-e21f60cc0b6b"}}
+HTTP 401
+
+---------------------------------------------------------------
+RESULT: PASS. No key and a wrong key both give 401 on both internal endpoints.

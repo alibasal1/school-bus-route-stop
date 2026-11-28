@@ -51,7 +51,7 @@ function reset() {
   items = new Map();
   items.set(`Sessions|${hash(VALID)}`, { id: hash(VALID), user_id: 'user-admin', expires_at: seconds() + 3600 });
   items.set(`Sessions|${hash(EXPIRED)}`, { id: hash(EXPIRED), user_id: 'user-admin', expires_at: seconds() - 60 });
-  items.set('Users|user-admin', { user_id: 'user-admin', role: 'admin', name: 'Admin' });
+  items.set('Users|user-admin', { id: 'user-admin', role: 'admin', name: 'Admin' });
 }
 
 /** A request and response pair close enough to Express for the middleware. */
@@ -171,7 +171,7 @@ test('the role comes from the Users table, never from the request', async () => 
   // nothing: the role is read from the table the client cannot write.
   const req = fakeReq(`Bearer ${VALID}`);
   req.body = { role: 'admin' };
-  items.set('Users|user-admin', { user_id: 'user-admin', role: 'parent', name: 'Parent' });
+  items.set('Users|user-admin', { id: 'user-admin', role: 'parent', name: 'Parent' });
 
   await run(requireAuth, req, fakeRes());
   assert.equal(req.user.role, 'parent');

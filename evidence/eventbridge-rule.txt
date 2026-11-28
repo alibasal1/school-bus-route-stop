@@ -1,0 +1,15 @@
+$ aws events describe-rule --name route-stop-daily-generate --query '{Name:Name,Schedule:ScheduleExpression,State:State}' --profile floci
+{
+    "Name": "route-stop-daily-generate",
+    "Schedule": "cron(0 2 * * ? *)",
+    "State": "ENABLED"
+}
+
+$ aws events list-targets-by-rule --rule route-stop-daily-generate --query 'Targets[].{Id:Id,Arn:Arn}' --profile floci
+[
+    {
+        "Id": "1",
+        "Arn": "arn:aws:lambda:us-east-1:000000000000:function:route-stop-api"
+    }
+]
+

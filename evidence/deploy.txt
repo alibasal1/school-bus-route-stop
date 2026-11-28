@@ -1,0 +1,67 @@
+# Output of: export AWS_PROFILE=floci MSYS_NO_PATHCONV=1; bash infra/deploy.sh
+# 2026-11-27T05:11:07Z, on Floci (local Docker). No secret values are printed by the script.
+
+==> Checking what is needed
+    aws ok, account 000000000000, region us-east-1
+
+==> 1/8  DynamoDB tables
+    Routes already exists
+    Stops already exists
+    Buses already exists
+    RouteSchedules already exists
+    TripEvents already exists
+    Trips already exists
+    Users already exists
+    Sessions already exists
+    TripStops already exists
+
+==> 2/8  IAM role and a least-privilege policy
+    role route-stop-api-role already exists
+    policy route-stop-api-policy applied (write own tables, read Users/Sessions, send to one queue)
+
+==> 3/8  Optional: secrets
+    no Turnstile key set, so no secret created (Turnstile will be skipped)
+
+==> 4/8  Building the deployment package
+
+> route-stop-api@1.0.0 zip
+> node scripts/zip.js
+
+Wrote C:\Users\basal\Desktop\ali cloud\school-bus-route-stop\dist\route-stop-api.zip
+2394 files, 2.29 MB
+Upload it with: aws lambda update-function-code --function-name route-stop-api \
+  --zip-file fileb://dist/route-stop-api.zip
+
+==> 5/8  Lambda
+    updated route-stop-api
+
+==> 6/8  API Gateway, with throttling
+    api b92afbc138 already exists
+    24 routes
+    throttling 10 rps, burst 20
+    (Floci records throttling but does not enforce it, which is why
+     middleware/rateLimit.js also limits per source IP)
+
+==> 7/8  EventBridge: daily trip generation
+    rule route-stop-daily-generate, every day 02:00
+
+==> 8/8  CloudWatch: logs, a SECURITY metric filter, and an alarm
+    metric filter and alarm requested
+
+==> Done
+
+  API address   http://b92afbc138.execute-api.localhost.floci.io:4566
+  Health        http://b92afbc138.execute-api.localhost.floci.io:4566/api/health
+  Readiness     http://b92afbc138.execute-api.localhost.floci.io:4566/api/ready
+
+  Logs          aws logs tail /aws/lambda/route-stop-api --since 10m --format short
+  Alerts queue  http://localhost:4566/000000000000/favorites-alerts-queue  (send only)
+
+  Next:
+    1. npm run seed
+    2. node scripts/make-test-sessions.js
+    3. Put the address above in the frontend .env.local as
+       VITE_ROUTES_API_URL (that file is not committed).
+    4. Ali runs his deploy.sh so his queue exists, then cancel a trip and
+       check his Alerts page.
+

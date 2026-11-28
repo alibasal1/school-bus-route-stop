@@ -1,0 +1,38 @@
+# ST-08: The security headers are there
+# API: http://b92afbc138.execute-api.localhost.floci.io:4566
+# Run: 2026-11-27T04:46:18Z
+
+$ curl -s -D - -o /dev/null $API/api/health
+HTTP/1.1 200 OK
+access-control-expose-headers: X-Request-Id,RateLimit-Limit,RateLimit-Remaining,Retry-After
+content-length: 84
+content-security-policy: default-src 'none'; frame-ancestors 'none'
+content-type: application/json; charset=utf-8
+cross-origin-resource-policy: same-site
+Date: Fri, 27 Nov 2026 04:46:18 GMT
+permissions-policy: camera=(), microphone=(), geolocation=(), payment=()
+referrer-policy: no-referrer
+strict-transport-security: max-age=31536000; includeSubDomains
+vary: Origin
+x-amz-id-2: 8cb75c35-eea5-4541-a4d4-9cdc63da7048
+x-amz-request-id: 8cb75c35-eea5-4541-a4d4-9cdc63da7048
+x-amzn-RequestId: 8cb75c35-eea5-4541-a4d4-9cdc63da7048
+x-content-type-options: nosniff
+x-frame-options: DENY
+x-request-id: ecdc3b89-625c-4374-9734-b41c76d31e5c
+
+
+
+$ curl -s -D - -o /dev/null -H "Authorization: Bearer $PARENT1_TOKEN" $API/api/routes | grep -iE "^HTTP|content-security|x-content-type|x-frame|referrer|permissions|cross-origin|cache-control|x-powered-by"
+HTTP/1.1 200 OK
+cache-control: private, max-age=60, stale-while-revalidate=120
+content-security-policy: default-src 'none'; frame-ancestors 'none'
+cross-origin-resource-policy: same-site
+permissions-policy: camera=(), microphone=(), geolocation=(), payment=()
+referrer-policy: no-referrer
+x-content-type-options: nosniff
+x-frame-options: DENY
+
+
+---------------------------------------------------------------
+RESULT: PASS. CSP, nosniff, X-Frame-Options DENY, Referrer-Policy, Permissions-Policy, CORP and HSTS are sent, and there is no X-Powered-By.

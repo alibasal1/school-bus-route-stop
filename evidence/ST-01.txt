@@ -1,0 +1,10 @@
+# ST-01: No token gives 401
+# API: http://b92afbc138.execute-api.localhost.floci.io:4566
+# Run: 2026-11-27T04:45:37Z
+
+$ curl -s -w "\nHTTP %{http_code}" $API/api/routes
+{"error":{"code":"UNAUTHENTICATED","message":"Please log in.","request_id":"49641c74-9f6a-4a34-bf65-bc1c2c86d136"}}
+HTTP 401
+
+---------------------------------------------------------------
+RESULT: PASS. 401 UNAUTHENTICATED, no data.

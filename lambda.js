@@ -28,6 +28,22 @@ const serverlessHandler = serverlessHttp(app, {
     if (event && event.isBase64Encoded && typeof request.body === 'string') {
       request.body = Buffer.from(request.body, 'base64').toString('utf8');
     }
+    // A string is still not an object: express.json() does not parse a body
+    // that is already set, so every POST, PUT and PATCH answered 400 "Request
+    // body must be a JSON object." on Lambda. Parse JSON here. A body that is
+    // not valid JSON becomes undefined, and the controller answers 400.
+    if (typeof request.body === 'string') {
+      const type = String(request.headers['content-type'] || '').toLowerCase();
+      const text = request.body;
+      request.body = undefined;
+      if (type.includes('application/json') && text) {
+        try {
+          request.body = JSON.parse(text);
+        } catch {
+          request.body = undefined;
+        }
+      }
+    }
 
     // --- the real client address -----------------------------------------
     // The rate limiter must not trust X-Forwarded-For: a client can set that

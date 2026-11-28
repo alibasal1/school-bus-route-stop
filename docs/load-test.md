@@ -1,82 +1,64 @@
-# Load test — Route & Stop
+# Load test: Route & Stop
 
 Service owner: Yahia Wael (247330), Team 14.
 
-> **No numbers here have been measured yet.** The table below is empty on
-> purpose. Run k6, paste what it actually prints, and keep the output file.
-> An honest p95 of 1,400 ms with a reason is worth more than a 480 ms that
-> nobody measured, and the reason is usually interesting in itself.
-
-## How to run it
+## How it was run
 
 ```bash
 export API_URL=http://<api-id>.execute-api.localhost.floci.io:4566
-source .test-tokens.local
-export PARENT_TOKEN="$PARENT1_TOKEN"
-
-k6 run loadtest/route-stop.js | tee docs/evidence/k6-route-stop.txt
+export PARENT_TOKEN=<parent1 token, from scripts/make-test-sessions.js>   # never in a file
+k6 run loadtest/route-stop.js
 ```
 
-## The shape of the test (Lab 8)
+The script was not changed. Same stages and thresholds as written.
 
 | Stage | Duration | Virtual users |
 |---|---|---|
-| ramp up | 30s | 0 → 20 |
+| ramp up | 30s | 0 to 20 |
 | hold | 1m | 20 |
-| **spike** | 30s | 20 → 100 |
-| recover | 30s | 100 → 20 |
-| ramp down | 20s | 20 → 0 |
+| spike | 30s | 20 to 100 |
+| recover | 30s | 100 to 20 |
+| ramp down | 20s | 20 to 0 |
 
-Reads only: `GET /api/routes?search=maadi` and `GET /api/trips`. These are
-the two endpoints a parent actually repeats. Writes are left out because a
-write test would leave hundreds of rows behind and would mostly be measuring
-the write rate limit.
+Each iteration: `GET /api/routes?search=maadi&limit=10`, wait 0.5 s, `GET /api/trips?limit=20`, wait 1 s.
+All virtual users use the same parent1 token.
 
-Thresholds: **p95 < 500 ms** and **failed rate < 0.05**.
+Thresholds: **p95 < 500 ms** and **failed rate < 5%**.
 
 ## Results
 
+Run on 27 Nov 2026, about 05:18 to 05:21 UTC, against
+`http://b92afbc138.execute-api.localhost.floci.io:4566` (Lambda behind API Gateway on Floci).
+Machine: one Windows laptop running k6, Docker, Floci and every Lambda copy.
+Warm-up first: 60 s wait, then 3 x `GET /api/health` (200, about 50 ms).
+Full output: `evidence/k6-routes.txt`.
+
 | Metric | Threshold | Measured | Pass? |
 |---|---|---|---|
-| `http_req_duration` p95 | < 500 ms | | |
-| `http_req_duration` median | — | | |
-| `http_req_duration` max | — | | |
-| `http_req_failed` | < 5% | | |
-| `rate_limited` | — | | |
-| Requests completed | — | | |
-| Throughput (req/s) | — | | |
+| `http_req_duration` p95 | < 500 ms | 6.44 s | **No** |
+| `http_req_duration` median | | 24.62 ms | |
+| `http_req_duration` p90 | | 1.55 s | |
+| `http_req_duration` max | | 38.82 s | |
+| `http_req_failed` | < 5% | 28.31% (919 of 3246) | **No** |
+| `rate_limited` (429) | | 919 of 3245 (28.32%) | |
+| Checks (200 or 429, items present) | | 4869 of 4869 (100%) | |
+| Requests | | 3246 | |
+| Request rate | | 18.98 per second | |
+| Iterations | | 1621 complete, 4 cut off at the end | |
 
-Date run:
-Machine:
+## Notes
 
-## What to write under the table
-
-Answer these in a sentence or two each, from what the run shows.
-
-1. **Did p95 pass?** If not, say by how much and what the likely cause was.
-   On Floci the whole stack is Docker on one laptop, and a cold Lambda start
-   includes fetching the secret and opening a Neon connection over the
-   internet. That is a fair explanation, and it is testable: compare the
-   first requests with the later ones.
-
-2. **How many 429s, and from which limiter?** At 100 virtual users some are
-   expected and are not failures — that is the rate limiter working. Note
-   whether the in-memory counter or Upstash was in use, because the
-   in-memory one is per container and so the cut-off moves around.
-
-3. **Did anything 500?** Any 5xx is a real defect, not load. Find the
-   request id in the CloudWatch log and say what it was.
-
-4. **Where did the time go?** `http_req_waiting` is the server; the rest is
-   connection setup. If waiting dominates, the database queries are the
-   place to look; the route search joins `stops` and counts per route.
-
-5. **What would you change?** Honest options, not a wish list: the search
-   endpoint already sets `Cache-Control`, Upstash would make the limit real,
-   and the stop count could be stored on the route rather than counted on
-   every search.
-
-## Evidence
-
-- `docs/evidence/k6-route-stop.txt` — the full k6 output
-- A screenshot of the summary, if the report asks for one
+1. **p95 did not pass.** It is 6.44 s, about 13 times the limit, while the median is 25 ms.
+   Most requests are fast. The slow ones are the requests that wait while Floci starts new
+   Lambda copies as Docker containers during the spike to 100 users (max 38.82 s). Everything
+   runs on one laptop, so this measures the laptop more than the code.
+2. **The failed rate is the 429s, not errors.** 919 failed requests and 919 rate-limited
+   answers: the same requests. All 100 users share one parent token, and the read limit is 120
+   a minute per user, so 429s are expected. The script's comment says a 429 is not a failure,
+   but the script does not tell k6 that (no `responseCallback`), so k6 counts it. The threshold
+   was not changed.
+3. **No 5xx.** Every answer was 200 or 429 (the "answered" checks are 100%).
+4. **The limiter is the in-memory one** (no Upstash), so each Lambda copy has its own count.
+   That is why the 429 count moves between runs (see ST-07 in `docs/security-tests.md`).
+5. **What would help:** a shared rate limit store, keeping Lambda copies warm before a spike,
+   and storing the stop count on the route instead of counting it on every search.

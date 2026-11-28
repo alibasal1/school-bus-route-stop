@@ -106,7 +106,7 @@ create_table TripEvents event_id "sent-index:sent"
 # this service can run on a clean Floci without waiting for his deploy. If
 # his script ran first, these are left exactly as they are.
 create_table Trips id "route-id-index:route_id"
-create_table Users user_id
+create_table Users id
 create_table Sessions id
 
 # TripStops has a sort key, so it does not fit the helper above.
@@ -123,7 +123,10 @@ fi
 # -----------------------------------------------------------------------------
 say "2/8  IAM role and a least-privilege policy"
 
-cat > /tmp/${PREFIX}-trust.json <<JSON
+# The policy files go in dist/ (git ignores it) with a relative path, because
+# the Windows aws program cannot read the /tmp folder of Git Bash.
+mkdir -p dist
+cat > dist/${PREFIX}-trust.json <<JSON
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -136,7 +139,7 @@ JSON
 # service owns, read only on Users and Sessions, and send only to Ali's one
 # queue. No "*" resource anywhere except the log-stream wildcard inside our
 # own log group, which is how CloudWatch names streams.
-cat > /tmp/${PREFIX}-policy.json <<JSON
+cat > dist/${PREFIX}-policy.json <<JSON
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -191,7 +194,7 @@ JSON
 
 if ! aws iam get-role --role-name "$ROLE" >/dev/null 2>&1; then
   aws iam create-role --role-name "$ROLE" \
-    --assume-role-policy-document file:///tmp/${PREFIX}-trust.json >/dev/null
+    --assume-role-policy-document file://dist/${PREFIX}-trust.json >/dev/null
   echo "    created role $ROLE"
 else
   echo "    role $ROLE already exists"
@@ -199,11 +202,11 @@ fi
 
 # put-role-policy overwrites, so a re-run always applies the current policy.
 aws iam put-role-policy --role-name "$ROLE" --policy-name "$POLICY" \
-  --policy-document file:///tmp/${PREFIX}-policy.json
+  --policy-document file://dist/${PREFIX}-policy.json
 echo "    policy $POLICY applied (write own tables, read Users/Sessions, send to one queue)"
 
 ROLE_ARN="arn:aws:iam::${ACCOUNT}:role/${ROLE}"
-rm -f /tmp/${PREFIX}-trust.json /tmp/${PREFIX}-policy.json
+rm -f dist/${PREFIX}-trust.json dist/${PREFIX}-policy.json
 
 # -----------------------------------------------------------------------------
 say "3/8  Optional: secrets"
@@ -249,7 +252,9 @@ CORS_ORIGINS="${CORS_ORIGINS:-http://localhost:5173}"
 
 # AWS_ENDPOINT_URL is what makes the SDK inside the function talk to Floci
 # rather than real AWS. On real AWS it is simply left out.
-ENV_VARS="Variables={NODE_ENV=production,CORS_ORIGINS=${CORS_ORIGINS},AWS_ENDPOINT_URL=http://host.docker.internal:4566,ALERTS_QUEUE_URL=${ALERTS_QUEUE_URL},INTERNAL_API_KEY=${INTERNAL_API_KEY},SECRET_ID=${SECRET_ID}}"
+# SECRET_ID is added only when it is set: an empty value breaks the --environment
+# shorthand ("Expected: ',', received: 'EOF'").
+ENV_VARS="Variables={NODE_ENV=production,CORS_ORIGINS=${CORS_ORIGINS},AWS_ENDPOINT_URL=http://host.docker.internal:4566,ALERTS_QUEUE_URL=${ALERTS_QUEUE_URL},INTERNAL_API_KEY=${INTERNAL_API_KEY}${SECRET_ID:+,SECRET_ID=${SECRET_ID}}}"
 
 if aws lambda get-function --function-name "$API_FN" >/dev/null 2>&1; then
   aws lambda update-function-code --function-name "$API_FN" \
@@ -372,10 +377,13 @@ try aws logs put-retention-policy --log-group-name "$LOG_GROUP" --retention-in-d
 # middleware/logger.js writes {"event":"SECURITY", ...} for every refused
 # request. This counts them, so a burst of 401s or 403s becomes a number on
 # a graph instead of a line nobody reads.
+# The filter is the plain word SECURITY, not a JSON filter: on Lambda each
+# line starts with the time, the request id and the level, so the line is not
+# pure JSON and a { $.event = ... } filter never matches it.
 try aws logs put-metric-filter \
   --log-group-name "$LOG_GROUP" \
   --filter-name "${PREFIX}-security-events" \
-  --filter-pattern '{ $.event = "SECURITY" }' \
+  --filter-pattern 'SECURITY' \
   --metric-transformations \
     "metricName=RouteStopSecurityEvents,metricNamespace=SchoolBus/RouteStop,metricValue=1,defaultValue=0" \
   || echo "    (Floci may not implement metric filters; real AWS does)"

@@ -1,0 +1,117 @@
+# Joint cancel test: Yehia's Route & Stop service + Ali's Favorites & Alerts service
+# Both on the same Floci. Run: 2026-11-27T05:11:28Z
+# Yehia's API: http://b92afbc138.execute-api.localhost.floci.io:4566
+# Ali's API:   http://04149cf3a7.execute-api.localhost.floci.io:4566
+# Tokens are in shell variables only. parent1 = 11111111-1111-4111-8111-111111111111
+
+=== 0. Before: parent1's cancel alerts on Ali's API
+
+$ curl -s -H "Authorization: Bearer $PARENT1_TOKEN" $ALI_API/api/alerts | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const j=JSON.parse(s);const l=(j.items||j.alerts||j).filter(a=>a.type===\"cancel\");console.log(\"cancel alerts for parent1:\",l.length);l.slice(0,3).forEach(a=>console.log(\" -\",a.message))})"
+cancel alerts for parent1: 1
+ - Route R1: the morning trip on 2026-11-24 is cancelled. Reason: Bus in the garage
+
+
+=== 1. parent1 saves a stop on one of Yehia's seeded routes, through Ali's API
+
+$ curl -s -w "\nHTTP %{http_code}" -X POST -H "Authorization: Bearer $PARENT1_TOKEN" -H "Content-Type: application/json" -d "{\"routeId\":\"route-demo-maadi\",\"stopId\":\"stop-demo-maadi-1\"}" $ALI_API/api/favorites
+{"error":{"code":"DUPLICATE","message":"This favorite already exists."}}
+HTTP 409
+
+=== 2. admin finds today's trip on that route and cancels it, through Yehia's API
+
+$ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" "$YEHIA_API/api/trips" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const j=JSON.parse(s);(j.items||j).filter(t=>t.route_id===\"route-demo-maadi\").forEach(t=>console.log(t.id,t.service_date||t.date||\"\",t.run_type||\"\",t.status))})"
+trip:route-demo-maadi:afternoon  afternoon active
+trip:route-demo-maadi:morning  morning active
+
+
+Trip chosen: trip:route-demo-maadi:afternoon
+
+$ curl -s -w "\nHTTP %{http_code}" -X PATCH -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" -d "{\"status\":\"cancelled\",\"reason\":\"Joint test: bus in the garage\"}" $YEHIA_API/api/trips/$TRIP/status
+{"id":"trip:route-demo-maadi:afternoon","route_id":"route-demo-maadi","bus_id":"bus-demo-1","run_type":"afternoon","status":"cancelled","cancelled_date":"2026-11-27","cancellation_reason":"Joint test: bus in the garage","cancelled_at":"2026-11-27T05:11:36.344Z","source":"seed","created_at":"2026-11-27T04:34:26.840Z","route_code":"R1","route_name":"Maadi Morning Line","impact":{"trip_id":"trip:route-demo-maadi:afternoon","route_id":"route-demo-maadi","run_type":"afternoon","stops":[{"id":"stop-demo-maadi-1","name":"Road 9 Corner","stop_order":1},{"id":"stop-demo-maadi-2","name":"Maadi Club Gate","stop_order":2},{"id":"stop-demo-maadi-3","name":"School Gate B","stop_order":3}],"stop_count":3,"affected_students":0,"affected_parents":0},"event_id":"e9b4c39e-eef5-4746-a237-b916559adf16","event_delivered":true}
+HTTP 200
+
+=== 3. One message went to favorites-alerts-queue
+
+$ aws dynamodb scan --table-name TripEvents --filter-expression "trip_id = :t" --expression-attribute-values "{\":t\":{\"S\":\"$TRIP\"}}" --query "Items[].{event_id:event_id.S,event_type:event_type.S,sent:sent.S,trip_id:trip_id.S}"
+[
+    {
+        "event_id": "e9b4c39e-eef5-4746-a237-b916559adf16",
+        "event_type": "trip.cancelled",
+        "sent": "yes",
+        "trip_id": "trip:route-demo-maadi:afternoon"
+    }
+]
+
+
+$ aws logs filter-log-events --log-group-name /aws/lambda/route-stop-api --filter-pattern "\"event sent\"" --start-time $(( ($(date +%s) - 300) * 1000 )) --query "length(events)"
+1
+
+
+$ aws logs filter-log-events --log-group-name /aws/lambda/favorites-alerts-api --filter-pattern "\"Alerts queue\"" --start-time $(( ($(date +%s) - 300) * 1000 )) --query "events[].message"
+[
+    "2026-11-27T05:11:36.571Z\t21599c57-8a06-48b5-8477-899c9b0a93da\tINFO\tAlerts queue: 1 messages, 1 alerts created"
+]
+
+
+=== 4. parent1 sees the cancel alert on Ali's API
+
+$ curl -s -H "Authorization: Bearer $PARENT1_TOKEN" $ALI_API/api/alerts | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const j=JSON.parse(s);const l=(j.items||j.alerts||j).filter(a=>a.type===\"cancel\");console.log(\"cancel alerts for parent1:\",l.length);l.slice(0,3).forEach(a=>console.log(\" -\",a.message))})"
+cancel alerts for parent1: 2
+ - Route R1: the afternoon trip on 2026-11-27 is cancelled. Reason: Joint test: bus in the garage
+ - Route R1: the morning trip on 2026-11-24 is cancelled. Reason: Bus in the garage
+
+
+=== 5a. The admin cancels the same trip again, through Yehia's API
+
+$ curl -s -w "\nHTTP %{http_code}" -X PATCH -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" -d "{\"status\":\"cancelled\",\"reason\":\"Joint test: bus in the garage\"}" $YEHIA_API/api/trips/$TRIP/status
+{"error":{"code":"CONFLICT","message":"That trip is already cancelled.","request_id":"ec5bca92-8602-490f-9274-ce39e2f92692"}}
+HTTP 409
+
+$ curl -s -H "Authorization: Bearer $PARENT1_TOKEN" $ALI_API/api/alerts | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const j=JSON.parse(s);const l=(j.items||j.alerts||j).filter(a=>a.type===\"cancel\");console.log(\"cancel alerts for parent1:\",l.length);l.slice(0,3).forEach(a=>console.log(\" -\",a.message))})"
+cancel alerts for parent1: 2
+ - Route R1: the afternoon trip on 2026-11-27 is cancelled. Reason: Joint test: bus in the garage
+ - Route R1: the morning trip on 2026-11-24 is cancelled. Reason: Bus in the garage
+
+
+=== 5b. The exact same event (same event_id) is delivered to Ali's queue a second time
+
+$ cat dist/joint-event.json
+{"event_id":"e9b4c39e-eef5-4746-a237-b916559adf16","event_type":"trip.cancelled","route_id":"route-demo-maadi","trip_id":"trip:route-demo-maadi:afternoon","occurred_at":"2026-11-27T05:11:36.351Z","payload":{"service_date":"2026-11-27","run_type":"afternoon","route_code":"R1","reason":"Joint test: bus in the garage"}}
+
+$ aws sqs send-message --queue-url $Q --message-body file://dist/joint-event.json --query MessageId --output text
+c8d9a6c4-08d4-44e7-a709-571059abf79c
+
+
+$ aws dynamodb get-item --table-name ProcessedEvents --key "{\"event_id\":{\"S\":\"$EVID\"}}" --query "Item.event_id.S" --output text
+e9b4c39e-eef5-4746-a237-b916559adf16
+
+
+$ aws logs filter-log-events --log-group-name /aws/lambda/favorites-alerts-api --filter-pattern "\"Alerts queue\"" --start-time $(( ($(date +%s) - 60) * 1000 )) --query "events[].message"
+[
+    "2026-11-27T05:12:27.569Z\t3b8d8911-5644-4079-8c81-2cb40a251fe4\tINFO\tAlerts queue: route event e9b4c39e-eef5-4746-a237-b916559adf16 was already handled, skipped.",
+    "2026-11-27T05:12:27.569Z\t3b8d8911-5644-4079-8c81-2cb40a251fe4\tINFO\tAlerts queue: 1 messages, 0 alerts created"
+]
+
+
+$ curl -s -H "Authorization: Bearer $PARENT1_TOKEN" $ALI_API/api/alerts | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const j=JSON.parse(s);const l=(j.items||j.alerts||j).filter(a=>a.type===\"cancel\");console.log(\"cancel alerts for parent1:\",l.length);l.slice(0,3).forEach(a=>console.log(\" -\",a.message))})"
+cancel alerts for parent1: 2
+ - Route R1: the afternoon trip on 2026-11-27 is cancelled. Reason: Joint test: bus in the garage
+ - Route R1: the morning trip on 2026-11-24 is cancelled. Reason: Bus in the garage
+
+
+=== Result
+
+PASS.
+- Step 1: parent1's stop on Yehia's route route-demo-maadi is saved in Ali's service. (It was saved in
+  the first try below, so this run answers 409 "already saved".)
+- Step 2: the admin cancel through Yehia's API answers 200 and writes one trip.cancelled event (sent = yes).
+- Step 3: Yehia's Lambda logged one "event sent". Ali's Lambda read 1 message and created 1 alert.
+- Step 4: parent1 now has the new cancel alert on Ali's API (2 cancel alerts: the new one and an older one).
+- Step 5a: a second cancel through Yehia's API is refused with 409 "already cancelled", so no new event.
+- Step 5b: the same event_id delivered again is skipped by Ali's service ("already handled", 0 alerts),
+  because the event_id is in ProcessedEvents. parent1 still has 2 cancel alerts.
+
+First try (05:04 UTC) failed at step 2: every POST, PUT and PATCH on Yehia's Lambda answered 400
+"Request body must be a JSON object." lambda.js turned the body into a string but never parsed it.
+Fixed in lambda.js (commit "Parse JSON bodies in lambda.js ..."), redeployed, and the run above is the
+full test again from the start.

@@ -1,0 +1,10 @@
+# ST-02: A fake token gives 401
+# API: http://b92afbc138.execute-api.localhost.floci.io:4566
+# Run: 2026-11-27T04:45:38Z
+
+$ curl -s -w "\nHTTP %{http_code}" -H "Authorization: Bearer 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" $API/api/routes
+{"error":{"code":"UNAUTHENTICATED","message":"Your session has expired. Please log in again.","request_id":"ccbe7a88-b404-412b-98c4-4269ca350eab"}}
+HTTP 401
+
+---------------------------------------------------------------
+RESULT: PASS. 401 UNAUTHENTICATED.

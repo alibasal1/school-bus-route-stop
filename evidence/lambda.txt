@@ -1,0 +1,20 @@
+$ aws lambda get-function --function-name route-stop-api --query 'Configuration.{Name:FunctionName,Runtime:Runtime,Role:Role,Handler:Handler,MemorySize:MemorySize,Timeout:Timeout,State:State}' --profile floci
+{
+    "Name": "route-stop-api",
+    "Runtime": "nodejs20.x",
+    "Role": "arn:aws:iam::000000000000:role/route-stop-api-role",
+    "Handler": "lambda.handler",
+    "MemorySize": 512,
+    "Timeout": 30,
+    "State": "Active"
+}
+
+$ aws lambda get-function-configuration --function-name route-stop-api --query 'keys(Environment.Variables)' --profile floci
+[
+    "NODE_ENV",
+    "CORS_ORIGINS",
+    "AWS_ENDPOINT_URL",
+    "ALERTS_QUEUE_URL",
+    "INTERNAL_API_KEY"
+]
+

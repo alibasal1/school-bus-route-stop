@@ -1,0 +1,50 @@
+$ aws apigatewayv2 get-apis --query "Items[?Name=='route-stop-http-api'].{Name:Name,ApiId:ApiId,Protocol:ProtocolType}" --output table --profile floci
+---------------------------------------------------
+|                     GetApis                     |
++-------------+-----------------------+-----------+
+|    ApiId    |         Name          | Protocol  |
++-------------+-----------------------+-----------+
+|  b92afbc138 |  route-stop-http-api  |  HTTP     |
++-------------+-----------------------+-----------+
+
+$ aws apigatewayv2 get-routes --api-id b92afbc138 --query 'sort(Items[].RouteKey)' --output table --profile floci
+--------------------------------------
+|              GetRoutes             |
++------------------------------------+
+|  DELETE /api/routes/{id}           |
+|  DELETE /api/stops/{id}            |
+|  GET /api/buses                    |
+|  GET /api/health                   |
+|  GET /api/internal/cron/generate   |
+|  GET /api/ready                    |
+|  GET /api/routes                   |
+|  GET /api/routes/{id}              |
+|  GET /api/routes/{id}/schedule     |
+|  GET /api/trips                    |
+|  GET /api/trips/{id}               |
+|  GET /api/trips/{id}/impact        |
+|  OPTIONS /{proxy+}                 |
+|  PATCH /api/trips/{id}/status      |
+|  POST /api/buses                   |
+|  POST /api/internal/events/retry   |
+|  POST /api/routes                  |
+|  POST /api/routes/{id}/stops       |
+|  POST /api/trips                   |
+|  POST /api/trips/generate          |
+|  PUT /api/routes/{id}              |
+|  PUT /api/routes/{id}/schedule     |
+|  PUT /api/routes/{id}/stops/order  |
+|  PUT /api/stops/{id}               |
++------------------------------------+
+
+$ aws apigatewayv2 get-stages --api-id b92afbc138 --query 'Items[].{Stage:StageName,Throttle:DefaultRouteSettings}' --profile floci
+[
+    {
+        "Stage": "$default",
+        "Throttle": {
+            "ThrottlingBurstLimit": 20,
+            "ThrottlingRateLimit": 10.0
+        }
+    }
+]
+

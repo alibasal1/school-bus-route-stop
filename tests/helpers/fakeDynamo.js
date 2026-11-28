@@ -103,7 +103,7 @@ function createFakeDynamo(seed = {}) {
 
   // Seeding uses the same key rules as the real tables.
   const keyFields = {
-    [TABLES.USERS]: ['user_id'],
+    [TABLES.USERS]: ['id'],
     [TABLES.SESSIONS]: ['id'],
     [TABLES.TRIP_STOPS]: ['trip_id', 'stop_id'],
     [TABLES.EVENTS]: ['event_id'],

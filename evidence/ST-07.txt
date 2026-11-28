@@ -1,0 +1,57 @@
+# ST-07: The rate limit gives 429 with Retry-After, also with a fake X-Forwarded-For
+# API: http://b92afbc138.execute-api.localhost.floci.io:4566
+# Run: 2026-11-27T04:45:51Z
+
+Read limit in routes/routes.js: 120 requests a minute per user. parent2 sends 130 GET /api/routes,
+each with a different fake X-Forwarded-For, as fast as one shell can.
+
+$ for i in $(seq 1 130); do curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $PARENT2_TOKEN" -H "X-Forwarded-For: 10.0.$((i/250)).$((i%250))" $API/api/routes; done | sort | uniq -c
+    130 200
+
+
+$ curl -s -D - -o /dev/null -H "Authorization: Bearer $PARENT2_TOKEN" -H "X-Forwarded-For: 10.9.9.9" $API/api/routes | grep -iE "^HTTP|retry-after|ratelimit"
+HTTP/1.1 200 OK
+access-control-expose-headers: X-Request-Id,RateLimit-Limit,RateLimit-Remaining,Retry-After
+ratelimit-limit: 120
+ratelimit-remaining: 29
+ratelimit-reset: 43
+
+
+---------------------------------------------------------------
+RESULT ABOVE: FAIL. 130 requests in under a minute, all 200, no 429. The header shows this Lambda copy
+had counted only 91 (remaining 29 of 120): Floci ran the requests on more than one copy, and each copy
+keeps its own count in memory (middleware/rateLimit.js has no shared store without Upstash).
+The fake X-Forwarded-For had no effect: a logged-in caller is counted by user id.
+
+Second try: 400 requests in one go, to see if any copy reaches 120 inside one minute.
+# Run: 2026-11-27T05:00:45Z
+
+$ for i in $(seq 1 400); do curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $PARENT2_TOKEN" -H "X-Forwarded-For: 10.1.$((i/250)).$((i%250))" $API/api/routes; done | sort | uniq -c
+    217 200
+    183 429
+
+
+$ curl -s -D - -o /dev/null -H "Authorization: Bearer $PARENT2_TOKEN" -H "X-Forwarded-For: 10.9.9.8" $API/api/routes | grep -iE "^HTTP|retry-after|ratelimit"
+HTTP/1.1 200 OK
+access-control-expose-headers: X-Request-Id,RateLimit-Limit,RateLimit-Remaining,Retry-After
+ratelimit-limit: 120
+ratelimit-remaining: 88
+ratelimit-reset: 54
+
+
+The headers of the first 429 in a new burst (fake X-Forwarded-For on every request):
+$ for i in $(seq 1 300); do h=$(curl -s -D - -o /dev/null -H "Authorization: Bearer $PARENT2_TOKEN" -H "X-Forwarded-For: 10.2.$((i/250)).$((i%250))" $API/api/routes); if echo "$h" | grep -q "^HTTP/1.1 429"; then echo "request $i:"; echo "$h" | grep -iE "^HTTP|retry-after|ratelimit"; break; fi; done
+request 89:
+HTTP/1.1 429 Too Many Requests
+access-control-expose-headers: X-Request-Id,RateLimit-Limit,RateLimit-Remaining,Retry-After
+ratelimit-limit: 120
+ratelimit-remaining: 0
+ratelimit-reset: 12
+retry-after: 12
+
+
+RESULT: PARTIAL PASS. The limit works and answers 429 with Retry-After, and a fake X-Forwarded-For
+does not get around it (the count is per user). But on Floci the count is per Lambda copy, so the
+first 130 requests got no 429 at all. A shared counter (the Upstash store the code supports) is
+not one of our lab services, so this stays a known gap. The API Gateway throttle (10 rps, burst 20)
+is set, but Floci does not enforce it.

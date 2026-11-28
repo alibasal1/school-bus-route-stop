@@ -64,8 +64,8 @@ const seconds = () => Math.floor(Date.now() / 1000);
 function seed() {
   return {
     [TABLES.USERS]: [
-      { user_id: 'user-admin', role: 'admin', name: 'Admin' },
-      { user_id: 'user-parent', role: 'parent', name: 'Parent One' },
+      { id: 'user-admin', role: 'admin', name: 'Admin' },
+      { id: 'user-parent', role: 'parent', name: 'Parent One' },
     ],
     [TABLES.SESSIONS]: [
       { id: hash(ADMIN_TOKEN), user_id: 'user-admin', expires_at: seconds() + 3600 },

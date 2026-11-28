@@ -1,0 +1,71 @@
+Changes from Ali (27 Nov 2026)
+
+Base: your repo at commit 744d8b8 (your CI commits are kept: .github/workflows/ci.yml and the quoted test paths in package.json).
+Everything was run on Floci, next to Ali's service and Ahmed's backend.
+Read docs/finish-notes.md for the full story and the questions you may get.
+
+What was changed or added, and why
+- package-lock.json: was out of sync with package.json, so npm ci failed on a fresh clone.
+- package.json: added serverless-http. lambda.js needs it; without it the Lambda gave 500.
+- middleware/auth.js, services/routes.js, scripts/make-test-sessions.js: read the shared Users
+  table by its key "id" (Ahmed's table), not "user_id". Before, every logged-in call failed.
+- tests/helpers/fakeDynamo.js, tests/unit/auth.test.js, tests/api/routes.test.js: the same key in the tests.
+- lambda.js: parse JSON bodies. Before, every POST, PUT and PATCH answered 400 on Lambda.
+- scripts/zip.js: keep dist/ and test/ folders inside node_modules. content-type was missing,
+  so the Lambda crashed.
+- infra/deploy.sh: policy files in dist/ instead of /tmp (Windows aws cannot read /tmp),
+  SECRET_ID only when set (an empty value broke --environment), Users table key "id",
+  and the SECURITY metric filter is now the text "SECURITY" (the JSON filter never matched).
+- docs/architecture.md: Users key is "id".
+- docs/security-tests.md: the 11 security tests with real results.
+- docs/load-test.md: the real k6 numbers.
+- docs/finish-notes.md: a full report for you to study.
+- evidence/: deploy output, CLI evidence (.txt and .png), ST-01 to ST-11, the joint cancel test,
+  k6 output and 4 screenshots.
+
+Test numbers
+- npm test: unit 61 of 61 pass, Jest 29 of 29 pass. Also from a fresh clone after npm ci.
+
+Security tests (evidence/ST-xx.txt)
+- Pass: ST-01, ST-02, ST-03, ST-04, ST-05, ST-06, ST-08, ST-10.
+- Pass after a fix: ST-11 (the alarm went OK -> ALARM after the metric filter fix).
+- Partial pass: ST-07 (429 and Retry-After work, a fake X-Forwarded-For does not help, but the
+  in-memory count is per Lambda copy, so the first 130 requests got no 429).
+- Partial fail: ST-09 (git and logs clean; INTERNAL_API_KEY is a plain value in the Lambda
+  environment and the EventBridge input. Still open: move it to Secrets Manager.)
+
+Joint cancel test (evidence/joint-cancel-test.txt): PASS
+- parent1 saved a stop on route-demo-maadi through Ali's API, the admin cancelled today's trip
+  through your API, one message went to favorites-alerts-queue, parent1 got one cancel alert,
+  a second cancel was refused (409), and the same event_id sent again was skipped (0 new alerts).
+
+k6 (evidence/k6-routes.txt, your script unchanged)
+- p95 6.44 s (threshold 500 ms, not passed), median 24.62 ms, failed 28.31% (threshold 5%,
+  not passed), 919 x 429 out of 3245, 3246 requests, 18.98 per second. The failed rate is
+  exactly the 429s; there were no 5xx.
+
+Your API on Ali's Floci: http://b92afbc138.execute-api.localhost.floci.io:4566
+(It changes on your own Floci: run bash infra/deploy.sh and use the address it prints.)
+
+How to push it to your repo (school-bus-route-stop)
+1. In your local clone: git pull
+2. Delete everything in your repo folder except the .git folder.
+3. Copy everything from this folder into your repo folder.
+4. npm ci && npm test
+5. git add -A
+6. git status   (check the list: no node_modules, no .env, no token files)
+7. git commit -m "Fix Lambda deploy, add evidence, security tests, joint test and k6" && git push
+
+How to put it in the team repo (alibasal1/school-bus-tracker), from YOUR account
+1. git fetch origin && git checkout yehia/route-stop
+2. git merge origin/main
+3. Copy your service into a folder named route-stop/ at the top of the repo
+   (everything from this folder, without CHANGES-FROM-ALI.txt if you like).
+4. Check that only route-stop/ is changed:
+     git diff --name-only origin/main | grep -v "^route-stop/"
+   It must print nothing. If it prints files (old skeleton files from your branch), put them back
+   the way main has them: git checkout origin/main -- <those paths>
+   and delete the ones main does not have: git rm <path>. Then run the check again.
+5. git add -A && git commit -m "Add Route & Stop service" && git push
+6. On GitHub, open a pull request from yehia/route-stop to main titled
+   "Route & Stop service (Yehia)".

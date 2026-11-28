@@ -73,7 +73,7 @@ async function requireAuth(req, res, next) {
       );
     }
 
-    const user = await getItem(TABLES.USERS, { user_id: session.user_id });
+    const user = await getItem(TABLES.USERS, { id: session.user_id });
     if (!user) {
       // A session pointing at a user who no longer exists is not a valid
       // login, whatever the session row says.
@@ -84,9 +84,9 @@ async function requireAuth(req, res, next) {
     // The role comes from the Users table, never from the request and never
     // from anything the client can influence.
     req.user = {
-      id: user.user_id,
+      id: user.id,
       role: user.role,
-      name: user.name || user.email || user.user_id,
+      name: user.name || user.email || user.id,
     };
     return next();
   } catch (error) {

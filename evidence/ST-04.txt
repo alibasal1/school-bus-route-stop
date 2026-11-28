@@ -1,0 +1,16 @@
+# ST-04: A parent on admin routes gives 403 (create route, cancel trip)
+# API: http://b92afbc138.execute-api.localhost.floci.io:4566
+# Run: 2026-11-27T04:45:49Z
+
+Trip used: trip:route-demo-maadi:afternoon (from GET /api/trips as admin)
+
+$ curl -s -w "\nHTTP %{http_code}" -X POST -H "Authorization: Bearer $PARENT1_TOKEN" -H "Content-Type: application/json" -d "{\"code\":\"X9\",\"name\":\"Parent made route\",\"area\":\"Maadi\"}" $API/api/routes
+{"error":{"code":"FORBIDDEN","message":"You do not have permission to do that.","request_id":"8704c945-d68d-48ce-99ae-a2e909f8b4ae"}}
+HTTP 403
+
+$ curl -s -w "\nHTTP %{http_code}" -X PATCH -H "Authorization: Bearer $PARENT1_TOKEN" -H "Content-Type: application/json" -d "{\"status\":\"cancelled\",\"reason\":\"parent test\"}" $API/api/trips/$TRIP/status
+{"error":{"code":"FORBIDDEN","message":"You do not have permission to do that.","request_id":"43bb439a-87a1-4ccf-95f7-8f887359e998"}}
+HTTP 403
+
+---------------------------------------------------------------
+RESULT: PASS. Both admin actions give 403 FORBIDDEN for a parent.

@@ -1,0 +1,28 @@
+$ aws logs describe-log-groups --log-group-name-prefix /aws/lambda/route-stop --query 'logGroups[].{Name:logGroupName,RetentionDays:retentionInDays}' --profile floci
+[
+    {
+        "Name": "/aws/lambda/route-stop-api",
+        "RetentionDays": 14
+    }
+]
+
+$ aws logs describe-metric-filters --log-group-name /aws/lambda/route-stop-api --query 'metricFilters[].{Name:filterName,Pattern:filterPattern,Metric:metricTransformations[0].metricName}' --profile floci
+[
+    {
+        "Name": "route-stop-security-events",
+        "Pattern": "{ $.event = \"SECURITY\" }",
+        "Metric": "RouteStopSecurityEvents"
+    }
+]
+
+$ aws cloudwatch describe-alarms --alarm-names route-stop-security-burst --query 'MetricAlarms[].{Name:AlarmName,State:StateValue,Metric:MetricName,Threshold:Threshold,Period:Period}' --output table --profile floci
+--------------------------------------------
+|              DescribeAlarms              |
++------------+-----------------------------+
+|  Metric    |  RouteStopSecurityEvents    |
+|  Name      |  route-stop-security-burst  |
+|  Period    |  300                        |
+|  State     |  OK                         |
+|  Threshold |  20.0                       |
++------------+-----------------------------+
+

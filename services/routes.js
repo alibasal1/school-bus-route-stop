@@ -450,7 +450,7 @@ async function createBus({ plate_number, capacity = 40, route_id = null, supervi
     // Users is read-only for this service. The check is here so the caller
     // gets "that user is not a supervisor" instead of a bus that silently
     // never gets a supervisor.
-    const user = await getItem(TABLES.USERS, { user_id: supervisor_id });
+    const user = await getItem(TABLES.USERS, { id: supervisor_id });
     if (!user) throw notFound('That supervisor account does not exist.');
     if (user.role !== 'supervisor') throw badRequest('That user is not a bus supervisor.');
   }

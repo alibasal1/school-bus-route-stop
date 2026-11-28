@@ -1,0 +1,83 @@
+# ST-11: Bad requests make SECURITY log lines and the alarm changes state
+# API: http://b92afbc138.execute-api.localhost.floci.io:4566
+# Run: 2026-11-27T04:46:30Z
+
+$ aws cloudwatch describe-alarms --alarm-names route-stop-security-burst --query "MetricAlarms[0].StateValue" --output text
+OK
+
+
+$ for i in $(seq 1 25); do curl -s -o /dev/null -w "%{http_code}\n" $API/api/routes; done | sort | uniq -c
+     25 401
+
+
+$ aws logs filter-log-events --log-group-name /aws/lambda/route-stop-api --filter-pattern SECURITY --start-time $(( ($(date +%s) - 120) * 1000 )) --query "length(events)"
+35
+
+
+$ aws logs filter-log-events --log-group-name /aws/lambda/route-stop-api --filter-pattern SECURITY --start-time $(( ($(date +%s) - 120) * 1000 )) --query "events[-2:].message"
+[
+    "2026-11-27T04:46:39.606Z\t1885fb8c-8b3c-49fc-9077-e6c1b407bcde\tWARN\tSECURITY {\"event\":\"SECURITY\",\"level\":\"warn\",\"service\":\"route-stop\",\"reason\":\"auth_missing_token\",\"method\":\"GET\",\"path\":\"/routes\",\"request_id\":\"354cd8e6-78e9-472a-ad20-698503ad7f9f\",\"status\":200,\"user_id\":null,\"ip\":\"127.0.0.1\"}",
+    "2026-11-27T04:46:39.784Z\tf2bff0f9-51f6-4b75-84b8-b28673441ef8\tWARN\tSECURITY {\"event\":\"SECURITY\",\"level\":\"warn\",\"service\":\"route-stop\",\"reason\":\"auth_missing_token\",\"method\":\"GET\",\"path\":\"/routes\",\"request_id\":\"49615da2-0ff2-4874-90b9-7ffe19162ee9\",\"status\":200,\"user_id\":null,\"ip\":\"127.0.0.1\"}"
+]
+
+
+$ aws cloudwatch get-metric-statistics --namespace SchoolBus/RouteStop --metric-name RouteStopSecurityEvents --start-time $(date -u -d "-10 min" +%FT%TZ) --end-time $(date -u -d "+1 min" +%FT%TZ) --period 300 --statistics Sum --query "Datapoints[].Sum"
+[
+    0.0,
+    0.0,
+    0.0
+]
+
+
+(checked the alarm every 10 s for up to 2 minutes)
+$ aws cloudwatch describe-alarms --alarm-names route-stop-security-burst --query "MetricAlarms[0].{State:StateValue,Reason:StateReason}"
+{
+    "State": "OK",
+    "Reason": "Threshold evaluated with missing datapoints treated as not breaching: 0 datapoint(s) breaching the threshold."
+}
+
+
+---------------------------------------------------------------
+RESULT ABOVE: FAIL. SECURITY lines were written, but the metric stayed 0 and the alarm stayed OK.
+Cause: the metric filter was the JSON filter { $.event = "SECURITY" }. A Lambda log line starts with
+the time, the request id and WARN, so it is not pure JSON and never matched.
+Fix: infra/deploy.sh now uses the text filter SECURITY. Redeployed, then the same test again:
+# Run: 2026-11-27T04:55:03Z
+
+$ aws logs describe-metric-filters --log-group-name /aws/lambda/route-stop-api --query "metricFilters[].{Name:filterName,Pattern:filterPattern}"
+[
+    {
+        "Name": "route-stop-security-events",
+        "Pattern": "SECURITY"
+    }
+]
+
+
+$ for i in $(seq 1 25); do curl -s -o /dev/null -w "%{http_code}\n" $API/api/routes; done | sort | uniq -c
+     25 401
+
+
+$ aws cloudwatch get-metric-statistics --namespace SchoolBus/RouteStop --metric-name RouteStopSecurityEvents --start-time $(date -u -d "-5 min" +%FT%TZ) --end-time $(date -u -d "+1 min" +%FT%TZ) --period 300 --statistics Sum --query "Datapoints[].Sum"
+[
+    25.0
+]
+
+
+(checked the alarm every 10 s for up to 3 minutes)
+$ aws cloudwatch describe-alarms --alarm-names route-stop-security-burst --query "MetricAlarms[0].{State:StateValue,Reason:StateReason}"
+{
+    "State": "OK",
+    "Reason": "Threshold evaluated with missing datapoints treated as not breaching: 0 datapoint(s) breaching the threshold."
+}
+
+
+Checked again a few minutes later (Floci evaluates the alarm when the 300 s period ends):
+$ aws cloudwatch describe-alarms --alarm-names route-stop-security-burst --query "MetricAlarms[0].{State:StateValue,Updated:StateUpdatedTimestamp,Reason:StateReason}"
+{
+    "State": "ALARM",
+    "Updated": "2026-11-27T07:00:05+02:00",
+    "Reason": "Threshold Crossed: 1 datapoint(s) breaching the threshold."
+}
+
+
+RESULT AFTER THE FIX: PASS. 25 refused requests, 25 SECURITY lines counted, alarm OK -> ALARM.

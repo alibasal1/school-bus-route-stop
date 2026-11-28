@@ -167,7 +167,7 @@ same way:
 | `TripEvents` | `event_id` (+ `sent-index`) | read and write | me |
 | `Trips` | `id` (+ `route-id-index`) | **creates and cancels** | Ahmed's design |
 | `TripStops` | `trip_id` + `stop_id` | writes when a trip is made | Ahmed's design |
-| `Users` | `user_id` | **read only** | Ahmed |
+| `Users` | `id` | **read only** | Ahmed |
 | `Sessions` | `id` | **read only** | Ahmed |
 | `IdempotencyKeys` | `id`, TTL `expires_at` | read and write | me |
 

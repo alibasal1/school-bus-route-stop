@@ -1,0 +1,19 @@
+# ST-03: An expired session gives 401 with the same message as a fake token
+# API: http://b92afbc138.execute-api.localhost.floci.io:4566
+# Run: 2026-11-27T04:45:38Z
+
+Setup: a Sessions item for parent1 whose expires_at is one hour in the past
+(the token is random and only lives in a shell variable; the item is deleted after the test).
+
+$ curl -s -w "\nHTTP %{http_code}" -H "Authorization: Bearer $EXPIRED_TOKEN" $API/api/routes
+{"error":{"code":"UNAUTHENTICATED","message":"Your session has expired. Please log in again.","request_id":"e79d6a0c-60f1-4af1-8140-6148be32d113"}}
+HTTP 401
+
+$ a=$(curl -s -H "Authorization: Bearer $EXPIRED_TOKEN" $API/api/routes | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>console.log(JSON.parse(s).error.message))"); b=$(curl -s -H "Authorization: Bearer 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" $API/api/routes | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>console.log(JSON.parse(s).error.message))"); echo "expired: $a"; echo "fake:    $b"; [ "$a" = "$b" ] && echo "SAME MESSAGE" || echo "DIFFERENT MESSAGE"
+expired: Your session has expired. Please log in again.
+fake:    Your session has expired. Please log in again.
+SAME MESSAGE
+
+
+---------------------------------------------------------------
+RESULT: PASS. 401, and the message is exactly the same as for a fake token, so a caller cannot tell an old real token from a made-up one.

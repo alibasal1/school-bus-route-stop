@@ -1,0 +1,18 @@
+# ST-05: NoSQL injection in an id gives 400 with no data
+# API: http://b92afbc138.execute-api.localhost.floci.io:4566
+# Run: 2026-11-27T04:45:50Z
+
+$ curl -s -w "\nHTTP %{http_code}" -H "Authorization: Bearer $PARENT1_TOKEN" "$API/api/routes/%7B%22%24ne%22%3A%20null%7D"
+{"error":{"code":"VALIDATION_ERROR","message":"Route id must be an id made of letters, numbers, hyphen, underscore or colon.","request_id":"a44e1bb7-cef4-4186-971b-433b5f3c8351"}}
+HTTP 400
+
+$ curl -s -w "\nHTTP %{http_code}" -H "Authorization: Bearer $PARENT1_TOKEN" "$API/api/routes/'%20OR%201%3D1"
+{"error":{"code":"VALIDATION_ERROR","message":"Route id must be an id made of letters, numbers, hyphen, underscore or colon.","request_id":"9f170941-a914-4086-ae07-1be66c0baf06"}}
+HTTP 400
+
+$ curl -s -w "\nHTTP %{http_code}" -H "Authorization: Bearer $PARENT1_TOKEN" "$API/api/trips/%7B%22%24gt%22%3A%22%22%7D"
+{"error":{"code":"VALIDATION_ERROR","message":"Trip id must be an id made of letters, numbers, hyphen, underscore or colon.","request_id":"95d67033-1934-4a53-a73b-29508852e679"}}
+HTTP 400
+
+---------------------------------------------------------------
+RESULT: PASS. All three give 400 VALIDATION_ERROR with no data in the answer (lib/validate.js ID_PATTERN).

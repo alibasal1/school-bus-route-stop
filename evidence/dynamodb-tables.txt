@@ -1,0 +1,32 @@
+$ aws dynamodb list-tables --profile floci
+{
+    "TableNames": [
+        "Alerts",
+        "Attendance",
+        "AuditLogs",
+        "Buses",
+        "Favorites",
+        "Holidays",
+        "IdentityClaims",
+        "NotificationOutbox",
+        "ProcessedEvents",
+        "RouteSchedules",
+        "Routes",
+        "Sessions",
+        "Stops",
+        "Students",
+        "TripEvents",
+        "TripStops",
+        "Trips",
+        "UserEmails",
+        "Users"
+    ]
+}
+
+$ for t in Routes Stops Buses RouteSchedules TripEvents; do aws dynamodb describe-table --table-name $t --query 'Table.{Table:TableName,Key:KeySchema[0].AttributeName,Indexes:join(`, `, GlobalSecondaryIndexes[].IndexName || `[]`),Billing:BillingModeSummary.BillingMode,Items:ItemCount}' --output text --profile floci; done
+PAY_PER_REQUEST	name-index, area-index	4	id	Routes
+PAY_PER_REQUEST	route-id-index	12	id	Stops
+PAY_PER_REQUEST	route-id-index, supervisor-id-index	2	id	Buses
+PAY_PER_REQUEST	route-id-index	4	id	RouteSchedules
+PAY_PER_REQUEST	sent-index	0	event_id	TripEvents
+

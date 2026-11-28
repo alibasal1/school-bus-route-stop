@@ -44,7 +44,7 @@ async function main() {
     // Check the user exists rather than creating one: these accounts belong
     // to the auth service, and inventing a user here would put a row in
     // someone else's table that their code knows nothing about.
-    const existing = await getItem(TABLES.USERS, { user_id: user.id });
+    const existing = await getItem(TABLES.USERS, { id: user.id });
     if (!existing) {
       console.error(`${user.label}: no such user (${user.id}). Ask Ahmed to seed it. Skipped.`);
       continue;

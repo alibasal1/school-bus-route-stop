@@ -48,8 +48,18 @@ const NEVER = [
 // by the Lambda runtime, so shipping a copy only makes the upload bigger.
 const SKIP_IN_NODE_MODULES = [/^\.bin$/, /^@aws-sdk$/, /^aws-sdk$/, /^\.package-lock\.json$/];
 
+// Inside node_modules only the secret and junk rules apply. Packages keep
+// their own dist/, lib/ or test/ folders: content-type, for example, loads
+// dist/index.js, and leaving it out stops the function from starting.
+const NEVER_IN_NODE_MODULES = [
+  /(^|[\\/])\.env($|\.)/i,
+  /(^|[\\/])\.git($|[\\/])/,
+  /(^|[\\/])\.DS_Store$/,
+];
+
 function excluded(relativePath) {
-  return NEVER.some((pattern) => pattern.test(relativePath));
+  const rules = relativePath.startsWith('node_modules/') ? NEVER_IN_NODE_MODULES : NEVER;
+  return rules.some((pattern) => pattern.test(relativePath));
 }
 
 function walk(dir, base, files) {
